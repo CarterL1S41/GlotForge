@@ -1,0 +1,85 @@
+{
+  "name": "glotforge",
+  "version": "0.1.0",
+  "description": "Keyless i18n for TypeScript & React — write copy in your own language, ship every language. Content-hash catalogs, a build-time loader, and AI translation with glossary and context steering.",
+  "license": "MIT",
+  "author": "Carter Long",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CarterL1S41/GlotForge.git"
+  },
+  "homepage": "https://github.com/CarterL1S41/GlotForge#readme",
+  "bugs": {
+    "url": "https://github.com/CarterL1S41/GlotForge/issues"
+  },
+  "keywords": [
+    "i18n",
+    "internationalization",
+    "localization",
+    "translation",
+    "react",
+    "typescript",
+    "nextjs",
+    "ai",
+    "icu",
+    "keyless"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./loader": {
+      "types": "./dist/loader/index.d.ts",
+      "default": "./dist/loader/index.js"
+    },
+    "./eslint": {
+      "types": "./dist/eslint/index.d.ts",
+      "default": "./dist/eslint/index.js"
+    }
+  },
+  "bin": {
+    "glotforge": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0"
+  },
+  "peerDependencies": {
+    "eslint": ">=8",
+    "react": ">=18",
+    "typescript": ">=5.0"
+  },
+  "peerDependenciesMeta": {
+    "eslint": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}
