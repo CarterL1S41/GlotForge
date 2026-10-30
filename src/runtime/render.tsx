@@ -1,6 +1,19 @@
 import React, { type ReactElement, type ReactNode } from "react";
 import type { MessageNode } from "../shared/message";
+import { splitWords } from "../shared/speech";
 import { pseudoize } from "./pseudo";
+
+/**
+ * Word-highlight state threaded through a render: every text node is split
+ * into word spans numbered in render order (the same order the voice
+ * command numbers them), and the span whose number equals `active` carries
+ * data-voice-active for the app's CSS.
+ */
+export interface WordHighlight {
+  active: number | null;
+  /** Running word counter, advanced as text nodes render. */
+  index: number;
+}
 
 export interface RenderOptions {
   locale: string;
@@ -8,6 +21,33 @@ export interface RenderOptions {
   /** Semantic tag name -> the original React element to clone. */
   tags?: Record<string, ReactElement>;
   pseudo?: boolean;
+  words?: WordHighlight;
+}
+
+function renderWords(
+  text: string,
+  locale: string,
+  words: WordHighlight,
+  keyBase: number,
+): ReactNode[] {
+  const out: ReactNode[] = [];
+  let cursor = 0;
+  for (const span of splitWords(text, locale)) {
+    if (span.start > cursor) out.push(text.slice(cursor, span.start));
+    const index = words.index++;
+    out.push(
+      <span
+        key={`${keyBase}-${index}`}
+        data-voice-word={index}
+        {...(words.active === index ? { "data-voice-active": "" } : {})}
+      >
+        {span.text}
+      </span>,
+    );
+    cursor = span.end;
+  }
+  if (cursor < text.length) out.push(text.slice(cursor));
+  return out;
 }
 
 function selectBranch(
@@ -48,7 +88,11 @@ export function renderToReact(
   nodes.forEach((node, index) => {
     switch (node.type) {
       case "text":
-        out.push(opts.pseudo ? pseudoize(node.value) : node.value);
+        if (opts.words && !opts.pseudo) {
+          out.push(...renderWords(node.value, opts.locale, opts.words, index));
+        } else {
+          out.push(opts.pseudo ? pseudoize(node.value) : node.value);
+        }
         break;
       case "arg": {
         const value = opts.values?.[node.name];

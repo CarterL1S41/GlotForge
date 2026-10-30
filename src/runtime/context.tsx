@@ -10,7 +10,7 @@ import React, {
   useState,
   type ReactNode,
 } from "react";
-import type { Catalog } from "../shared/types";
+import type { Catalog, VoiceManifest } from "../shared/types";
 import {
   DEFAULT_COOKIE_NAME,
   dirForLocale,
@@ -54,6 +54,18 @@ export interface I18nProviderProps {
   loadCatalog?: (locale: string) => Promise<Catalog>;
   /** locale -> font key, written to <html data-i18n-font> for CSS font stacks. */
   fontMap?: Record<string, string>;
+  /**
+   * Lazy per-locale audio catalog import, e.g.
+   *   (locale) => import(`@/i18n/voice/${locale}.json`).then((m) => m.default)
+   * Loaded for the active locale (the source locale too) when set; omit it
+   * in apps without spoken audio.
+   */
+  loadVoiceManifest?: (locale: string) => Promise<VoiceManifest>;
+  /**
+   * URL prefix the clip files are served from — the app's public path for
+   * the CLI's voice.audioDir. Default "/audio/i18n".
+   */
+  audioBaseUrl?: string;
   cookieName?: string;
   /** localStorage key prefix. Default "glotforge". */
   storagePrefix?: string;
@@ -80,6 +92,11 @@ export interface I18nContextValue {
   devtoolsActive: boolean;
   setDevtoolsActive: (active: boolean) => void;
   storagePrefix: string;
+  /** Audio catalog for the effective locale, when the provider loads one. */
+  voiceManifest: VoiceManifest | null;
+  /** "unavailable" when no loadVoiceManifest was given. */
+  voiceStatus: "ready" | "loading" | "unavailable";
+  audioBaseUrl: string;
 }
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -109,6 +126,8 @@ export function I18nProvider(props: I18nProviderProps) {
     initialCatalog,
     loadCatalog,
     fontMap,
+    loadVoiceManifest,
+    audioBaseUrl = "/audio/i18n",
     cookieName = DEFAULT_COOKIE_NAME,
     storagePrefix = "glotforge",
     devtoolsAllowed = false,
@@ -192,6 +211,51 @@ export function I18nProvider(props: I18nProviderProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [locale, needsCatalog, loadCatalog, catalogCacheKey]);
 
+  // Audio catalogs load the same way, for the effective locale — the source
+  // locale has audio too, so there is no "needs" guard here.
+  const effectiveLocale = pseudo ? sourceLocale : locale;
+  const [voiceManifests, setVoiceManifests] = useState<Record<string, VoiceManifest>>({});
+  const freshVoiceLocales = useRef(new Set<string>());
+  const voiceCacheKey = useCallback(
+    (l: string) => `${storagePrefix}:voice:${l}`,
+    [storagePrefix],
+  );
+  useEffect(() => {
+    if (!loadVoiceManifest) return;
+    if (freshVoiceLocales.current.has(effectiveLocale)) return;
+    let cancelled = false;
+    if (!voiceManifests[effectiveLocale]) {
+      const cached = safeStorageGet(voiceCacheKey(effectiveLocale));
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached) as VoiceManifest;
+          setVoiceManifests((prev) =>
+            prev[effectiveLocale] ? prev : { ...prev, [effectiveLocale]: parsed },
+          );
+        } catch {
+          // Corrupt cache entry — the fresh load below replaces it.
+        }
+      }
+    }
+    loadVoiceManifest(effectiveLocale)
+      .then((fresh) => {
+        if (cancelled) return;
+        freshVoiceLocales.current.add(effectiveLocale);
+        setVoiceManifests((prev) => ({ ...prev, [effectiveLocale]: fresh }));
+        safeStorageSet(voiceCacheKey(effectiveLocale), JSON.stringify(fresh));
+      })
+      .catch((err) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn(`[glotforge] failed to load voice manifest for ${effectiveLocale}`, err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveLocale, loadVoiceManifest, voiceCacheKey]);
+  const activeVoiceManifest = voiceManifests[effectiveLocale] ?? null;
+
   const setLocale = useCallback(
     (next: string) => {
       setLocaleState(next);
@@ -253,6 +317,13 @@ export function I18nProvider(props: I18nProviderProps) {
       devtoolsActive: devtoolsAllowed && devtoolsEnabled,
       setDevtoolsActive,
       storagePrefix,
+      voiceManifest: activeVoiceManifest,
+      voiceStatus: !loadVoiceManifest
+        ? "unavailable"
+        : activeVoiceManifest
+          ? "ready"
+          : "loading",
+      audioBaseUrl,
     }),
     [
       locale,
@@ -266,6 +337,9 @@ export function I18nProvider(props: I18nProviderProps) {
       devtoolsEnabled,
       setDevtoolsActive,
       storagePrefix,
+      activeVoiceManifest,
+      loadVoiceManifest,
+      audioBaseUrl,
     ],
   );
 

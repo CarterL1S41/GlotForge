@@ -9,6 +9,12 @@ import {
   writeCatalog,
   writeManifest,
 } from "./catalog";
+import {
+  deleteClips,
+  readVoiceManifest,
+  voiceManifestLocales,
+  writeVoiceManifest,
+} from "./voice-catalog";
 
 export interface ExtractOptions {
   /** CLI --include: scan only these globs (a SCOPED run). */
@@ -105,15 +111,45 @@ export function runExtract(
           );
         }
         if (!existing.origins.includes(origin)) existing.origins.push(origin);
+        // A keyed voice marker wins over a bare one; two different keys on
+        // the same message is a mistake worth stopping on.
+        if (found.voice !== undefined) {
+          if (
+            typeof existing.voice === "string" &&
+            typeof found.voice === "string" &&
+            existing.voice !== found.voice
+          ) {
+            throw new Error(
+              `"${found.message}" carries two voice keys ("${existing.voice}" and "${found.voice}") — a message has one key`,
+            );
+          }
+          if (typeof found.voice === "string" || existing.voice === undefined) {
+            existing.voice = found.voice;
+          }
+        }
       } else {
         const entry: MessageEntry = {
           message: found.message,
           origins: [origin],
         };
         if (found.context) entry.context = found.context;
+        if (found.voice !== undefined) entry.voice = found.voice;
         extracted[found.hash] = entry;
       }
     }
+  }
+
+  // Voice keys are how the app addresses audio, so they must be unique.
+  const keyOwners = new Map<string, string>();
+  for (const [hash, entry] of Object.entries(extracted)) {
+    if (typeof entry.voice !== "string") continue;
+    const owner = keyOwners.get(entry.voice);
+    if (owner && owner !== hash) {
+      throw new Error(
+        `voice key "${entry.voice}" is used by two different messages ("${extracted[owner].message}" and "${entry.message}") — keys must be unique`,
+      );
+    }
+    keyOwners.set(entry.voice, hash);
   }
 
   const previous = readManifest(config, cwd);
@@ -167,6 +203,29 @@ export function runExtract(
     missingPerLocale[locale] = Object.keys(next).filter(
       (hash) => !catalog[hash],
     ).length;
+  }
+
+  // Audio catalogs: drop entries (and their clip files) whose message is
+  // gone or no longer voiced, and keep the key map in step with the code.
+  for (const locale of voiceManifestLocales(config, cwd)) {
+    const voiceManifest = readVoiceManifest(config, cwd, locale);
+    let changed = false;
+    for (const [hash, entry] of Object.entries(voiceManifest.entries)) {
+      if (!next[hash] || next[hash].voice === undefined) {
+        deleteClips(config, cwd, entry.clips.map((clip) => clip.file));
+        delete voiceManifest.entries[hash];
+        changed = true;
+      }
+    }
+    const keys: Record<string, string> = {};
+    for (const [hash, entry] of Object.entries(next)) {
+      if (typeof entry.voice === "string") keys[entry.voice] = hash;
+    }
+    if (JSON.stringify(keys) !== JSON.stringify(voiceManifest.keys)) {
+      voiceManifest.keys = keys;
+      changed = true;
+    }
+    if (changed) writeVoiceManifest(config, cwd, locale, voiceManifest);
   }
 
   return {

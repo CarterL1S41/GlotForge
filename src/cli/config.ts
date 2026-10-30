@@ -52,5 +52,44 @@ export function loadConfig(cwd: string): ResolvedConfig {
       maxTokens: raw.translation?.maxTokens ?? 16000,
       concurrency: raw.translation?.concurrency ?? 3,
     },
+    voice: resolveVoice(raw.voice ?? {}),
+  };
+}
+
+function resolveVoice(
+  raw: NonNullable<I18nConfig["voice"]>,
+): ResolvedConfig["voice"] {
+  const format = raw.format ?? "MP3";
+  if (format !== "MP3" && format !== "LINEAR16") {
+    throw new Error(`${CONFIG_FILE}: voice.format must be "MP3" or "LINEAR16".`);
+  }
+  const wordTiming = raw.wordTiming ?? "auto";
+  if (!["auto", "marks", "align", "none"].includes(wordTiming)) {
+    throw new Error(
+      `${CONFIG_FILE}: voice.wordTiming must be auto, marks, align or none.`,
+    );
+  }
+  const speakingRate = raw.speakingRate ?? 1;
+  if (
+    typeof speakingRate !== "number" ||
+    speakingRate < 0.25 ||
+    speakingRate > 2
+  ) {
+    throw new Error(`${CONFIG_FILE}: voice.speakingRate must be between 0.25 and 2.`);
+  }
+  return {
+    voices: raw.voices ?? {},
+    project: raw.project ?? "",
+    credentialsEnv: raw.credentialsEnv ?? "GOOGLE_APPLICATION_CREDENTIALS",
+    apiKeyEnv: raw.apiKeyEnv ?? "GOOGLE_TTS_KEY",
+    format,
+    speakingRate,
+    audioDir: raw.audioDir ?? "public/audio/i18n",
+    wordTiming,
+    sttRegion: raw.sttRegion ?? "us-central1",
+    sttModel: raw.sttModel ?? "chirp_2",
+    pricing: raw.pricing ?? {},
+    sttPerMinuteUsd: raw.sttPerMinuteUsd ?? 0.016,
+    concurrency: raw.concurrency ?? 3,
   };
 }

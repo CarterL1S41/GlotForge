@@ -9,10 +9,61 @@ export interface MessageEntry {
   context?: string;
   /** Where the message appears in source, as "path:line" strings. */
   origins: string[];
+  /**
+   * Spoken audio is generated for this message. A string is the voice key
+   * the app addresses it by (useVoicePlayer("intro")); `true` means voiced
+   * without a key. Not part of the hash.
+   */
+  voice?: string | true;
 }
 
 /** The source manifest: message hash -> entry. Committed to git. */
 export type Manifest = Record<string, MessageEntry>;
+
+/** One spoken word inside a clip, offsets in milliseconds from clip start. */
+export interface VoiceWord {
+  text: string;
+  startMs: number;
+  endMs: number;
+  /** The aligner could not place this word and interpolated its slot. */
+  estimated?: true;
+}
+
+/** One sentence of a voiced message: one audio file. */
+export interface VoiceClip {
+  /** Path relative to the audio directory, e.g. "es-ES/1abc...-0.mp3". */
+  file: string;
+  /** The sentence text this clip speaks. */
+  text: string;
+  durationMs: number;
+  /** Per-word timing when word timing was obtained for this clip. */
+  words?: VoiceWord[];
+}
+
+/** How word offsets were obtained for an entry. */
+export type VoiceTiming = "marks" | "align" | "sentence";
+
+/** The generated audio for one message in one locale. */
+export interface VoiceEntry {
+  /** Google voice name the clips were synthesized with. */
+  voice: string;
+  format: "MP3" | "LINEAR16";
+  speakingRate: number;
+  timing: VoiceTiming;
+  clips: VoiceClip[];
+}
+
+/**
+ * Per-locale audio catalog (<catalogDir>/voice/<locale>.json). Committed to
+ * git beside the text catalogs; `glotforge voice` only generates what is
+ * missing or stale.
+ */
+export interface VoiceManifest {
+  /** Voice key -> message hash, for every voiced message that has a key. */
+  keys: Record<string, string>;
+  /** Message hash -> generated audio. */
+  entries: Record<string, VoiceEntry>;
+}
 
 /** i18n.config.json — lives at the consuming app's repo root. */
 export interface I18nConfig {
@@ -106,8 +157,74 @@ export interface I18nConfig {
     /** Concurrent in-flight requests. Default 3. */
     concurrency?: number;
   };
+  /**
+   * Spoken audio for messages marked with `voice` (<Trans voice="intro">,
+   * t("...", { voice: "intro" })). Google Cloud Text-to-Speech is the
+   * synthesizer; word timing comes from SSML marks where the voice family
+   * honours them, otherwise from Speech-to-Text alignment.
+   */
+  voice?: {
+    /**
+     * Google voice name per locale, including the source locale, e.g.
+     *   "voices": { "en-US": "en-US-Chirp3-HD-Aoede", "es-ES": "es-ES-Chirp3-HD-Kore" }
+     * The name selects the family (Chirp3-HD, Neural2, Wavenet, Standard).
+     * A locale without an entry gets no audio.
+     */
+    voices?: Record<string, string>;
+    /**
+     * Google Cloud project id. Required with an API key; read from the
+     * service-account file when credentials are used. Also honoured from
+     * GOOGLE_CLOUD_PROJECT.
+     */
+    project?: string;
+    /**
+     * Env var holding a service-account key: a path to the JSON file or
+     * the JSON itself. Default "GOOGLE_APPLICATION_CREDENTIALS". Checked
+     * before the API key.
+     */
+    credentialsEnv?: string;
+    /** Env var holding a Google Cloud API key. Default "GOOGLE_TTS_KEY". */
+    apiKeyEnv?: string;
+    /** Clip encoding. Default "MP3" (about a twelfth the size of LINEAR16). */
+    format?: "MP3" | "LINEAR16";
+    /** Speaking pace, 0.25–2.0. Default 1. */
+    speakingRate?: number;
+    /**
+     * Directory the clip files are written to, relative to the app root.
+     * Default "public/audio/i18n" so a Next.js app serves them at
+     * /audio/i18n — the provider's `audioBaseUrl` default.
+     */
+    audioDir?: string;
+    /**
+     * How per-word offsets are obtained. Default "auto":
+     *   auto   — SSML marks for families that honour them (Neural2, Wavenet,
+     *            Standard, News, Polyglot), Speech-to-Text alignment for the
+     *            rest (Chirp 3 HD ignores marks).
+     *   marks  — always request marks; entries fall back to alignment with
+     *            a warning when none come back.
+     *   align  — always align through Speech-to-Text.
+     *   none   — sentence-level timing only (clip durations).
+     */
+    wordTiming?: "auto" | "marks" | "align" | "none";
+    /** Speech-to-Text V2 region for alignment. Default "us-central1". */
+    sttRegion?: string;
+    /** Speech-to-Text V2 model for alignment. Default "chirp_2". */
+    sttModel?: string;
+    /**
+     * Pricing for the estimate, USD per million characters keyed by a
+     * voice-name fragment ("Chirp3-HD", "Neural2", ...). Built-in list
+     * prices cover the Google families; override or extend here.
+     */
+    pricing?: Record<string, number>;
+    /** Speech-to-Text price for the estimate, USD per minute of audio. Default 0.016. */
+    sttPerMinuteUsd?: number;
+    /** Concurrent in-flight requests. Default 3. */
+    concurrency?: number;
+  };
 }
 
-export interface ResolvedConfig extends Required<Omit<I18nConfig, "translation">> {
+export interface ResolvedConfig
+  extends Required<Omit<I18nConfig, "translation" | "voice">> {
   translation: Required<NonNullable<I18nConfig["translation"]>>;
+  voice: Required<NonNullable<I18nConfig["voice"]>>;
 }

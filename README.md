@@ -5,7 +5,9 @@ every language. Your UI text lives directly in the source code — no keys, no
 registry file. Catalogs are keyed by a content hash of the source text (plus
 optional context), a build-time loader bakes the hashes in so the runtime
 never hashes or re-serializes anything, and an AI-powered CLI fills the
-catalogs with glossary and context steering.
+catalogs with glossary and context steering. Mark a message `voice` and the
+same CLI generates spoken audio for it in every language, one clip per
+sentence, with per-word timing for read-along highlighting.
 
 English is the default source language, but any `sourceLocale` works — write
 your copy in the language your team thinks in.
@@ -31,16 +33,19 @@ toast.error(t`Failed to save transaction`);
 | Server helpers | `glotforge/server` | cookie reading, `pickLocale`, per-request `createT` |
 | Loader | `glotforge/loader` | build-time hash/message injection (zero runtime hashing) |
 | ESLint plugin | `glotforge/eslint` | untranslated text cannot merge; `<Trans>` stays chunk-sized |
-| CLI | `npx glotforge` | extract / translate / status |
+| CLI | `npx glotforge` | extract / translate / voice / status |
 
 ### Where translations live (and why they're committed)
 
 Each app owns an `i18n/` directory, **committed to git — never gitignored**:
 
 ```
-i18n/messages.json          hash -> { message, context?, origins }   (the manifest)
-i18n/catalog/es-ES.json     hash -> translated string                (one per locale)
+i18n/messages.json          hash -> { message, context?, origins, voice? }   (the manifest)
+i18n/catalog/es-ES.json     hash -> translated string                        (one per locale)
 i18n/catalog/id-ID.json
+i18n/voice/en-US.json       voice keys + hash -> clips with word timing      (one per voiced locale)
+i18n/voice/es-ES.json
+public/audio/i18n/es-ES/    <hash>-<n>.mp3, one file per sentence
 ```
 
 The committed catalogs ARE the translation cache. `glotforge translate` only
@@ -48,7 +53,8 @@ fills hashes missing from a catalog, so nothing already translated is ever
 paid for or regenerated again. When source text changes, its hash changes —
 the old entry is pruned (git history keeps it) and only the new string is
 translated. There is no graveyard file: a git revert restores code and
-translations in the same commit.
+translations in the same commit. Audio catalogs and clip files follow the
+same rule: generated once, committed, pruned with their message.
 
 ## Setup in an app
 
@@ -383,8 +389,141 @@ each request at its own model's rates.
 ### The loop
 
 ```
-write copy in JSX  →  glotforge extract  →  glotforge translate  →  commit i18n/ with the code
+write copy in JSX  →  glotforge extract  →  glotforge translate  →  glotforge voice  →  commit i18n/ with the code
 ```
+
+## Spoken audio
+
+Any static message can be spoken. Mark it with `voice` — a key the app will
+play it by, or bare for audio without a key:
+
+```tsx
+<Trans voice="intro">Welcome to the training. Click next to begin.</Trans>
+<Trans voice>Thank you.</Trans>
+msg("Read the passage aloud.", { voice: "step-1" })
+t("Done.", { voice: true })
+```
+
+The marker is not part of the hash, so adding it never retranslates
+anything. Keys are unique per app (`extract` stops on a duplicate). Spoken
+text must be fixed: a `{placeholder}`, plural or select makes the message
+unspeakable, and `extract` says so and ignores the marker. Inline tags are
+fine — their words are spoken in place.
+
+### Config
+
+```json
+"voice": {
+  "voices": {
+    "en-US": "en-US-Chirp3-HD-Aoede",
+    "es-ES": "es-ES-Chirp3-HD-Kore",
+    "fr-FR": "fr-FR-Neural2-A"
+  },
+  "format": "MP3",
+  "speakingRate": 1,
+  "audioDir": "public/audio/i18n",
+  "wordTiming": "auto"
+}
+```
+
+- `voices` — one Google Cloud Text-to-Speech voice name per locale, the
+  source locale included. The name picks the family: Chirp 3 HD, Neural2,
+  WaveNet, Standard. A locale without a voice gets no audio, which is how
+  languages Chirp 3 does not cover fall back to an older family or stay
+  silent.
+- `format` — `MP3` (default, about a twelfth the bytes of `LINEAR16`) or
+  `LINEAR16` (uncompressed WAV).
+- `audioDir` — where clips are written, relative to the app root. The
+  default lands under Next.js `public/`, served at `/audio/i18n`, which is
+  the provider's `audioBaseUrl` default.
+- `wordTiming` — how per-word offsets are obtained. `auto` (default) uses
+  SSML mark timepoints for families that honour them (Neural2, WaveNet,
+  Standard) and Speech-to-Text alignment for the rest: Chirp 3 HD ignores
+  marks, so each clip is run back through Speech-to-Text V2 (`chirp_2`,
+  word offsets on) and the known words are placed onto what it heard. A
+  word the recogniser dropped is interpolated between its neighbours and
+  flagged `estimated`. `marks`, `align` and `none` force one method;
+  `sttRegion` (default `us-central1`) and `sttModel` tune alignment.
+- `project`, `credentialsEnv`, `apiKeyEnv` — see credentials below.
+
+### Credentials
+
+`glotforge voice` authenticates with a service account or an API key, in
+that order, read from the app's `.env.local` / `.env` or the environment:
+
+| Env var | Holds |
+|---|---|
+| `GOOGLE_APPLICATION_CREDENTIALS` | path to a service-account key file, or the key JSON itself |
+| `GOOGLE_TTS_KEY` | a Google Cloud API key — then `voice.project` (or `GOOGLE_CLOUD_PROJECT`) is required |
+
+Enable the Cloud Text-to-Speech API, plus the Speech-to-Text API when word
+timing is aligned. Pricing for the estimate is built in per family (Chirp 3
+HD $30 per million characters, Neural2 $16, WaveNet and Standard $4;
+alignment about $0.016 per minute); override with `voice.pricing` and
+`voice.sttPerMinuteUsd`.
+
+### Running it
+
+```
+npx glotforge voice                 # estimate + confirm, then generate what is missing or stale
+npx glotforge voice --locale es-ES --yes
+npx glotforge voice --dry-run
+npx glotforge voice --force         # regenerate everything in scope
+```
+
+Each voiced message becomes one clip per sentence (locale-aware sentence
+splitting, so Japanese and Thai split correctly), named
+`<hash>-<n>.mp3` under `<audioDir>/<locale>/`. The audio catalog records,
+per clip, the sentence text, its duration, and the word offsets in
+milliseconds. An entry is regenerated when its voice, format, pace or
+translated text changes; everything else is left alone. Translations must
+exist first — run `translate` before `voice`. `status` reports audio
+coverage per locale and how many entries are word-timed.
+
+### Playing it
+
+The provider loads the audio catalog for the active locale (the source
+locale too) when you give it a loader:
+
+```tsx
+<I18nProvider
+  ...
+  loadVoiceManifest={(l) => import(`@/i18n/voice/${l}.json`).then((m) => m.default)}
+  audioBaseUrl="/audio/i18n"
+>
+```
+
+`useVoicePlayer` plays a message's clips in sequence and reports the clip
+and word being spoken. Pass the word index to `<Trans highlight>` and every
+word renders in a `<span data-voice-word={n}>`, the current one also
+carrying `data-voice-active`:
+
+```tsx
+const player = useVoicePlayer("intro");
+
+<p>
+  <Trans voice="intro" highlight={player.word}>
+    Welcome to the training. Click next to begin.
+  </Trans>
+</p>
+<button onClick={player.toggle} disabled={!player.available}>
+  {player.status === "playing" ? t`Pause` : t`Listen`}
+</button>
+```
+
+```css
+[data-voice-active] { background: #fde68a; border-radius: 2px; }
+```
+
+`player` also exposes `status`, `clip`, `currentMs`, `durationMs`, `play`,
+`pause`, `stop`, `seekToClip(n)` and `seekToWord(n)`; `useVoice(ref)` returns
+the resolved clips (with URLs) for custom players. A ref is a voice key, a
+`msg()` descriptor, or a raw hash. Entries without word timing still report
+the clip index, so sentence-level highlighting always works.
+
+Word numbering is shared between the CLI and the renderer, so keep a word
+inside one element — `<b>un</b>related` would count as two words on screen
+and one in the audio.
 
 ## Devtools & pseudo-locale
 
@@ -400,11 +539,11 @@ waiting for real translations.
 
 Branches: `develop` (integration) → `main` (release). CI (typecheck + build)
 runs on pushes and PRs to both. To release, merge to `main`, bump `version`
-in package.json, then:
+in package.json, add the entry to [CHANGELOG.md](./CHANGELOG.md), then:
 
 ```
-git tag v0.2.0
-git push origin v0.2.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The release workflow verifies the tag matches package.json and publishes to
@@ -420,9 +559,10 @@ npm run build
 ```
 
 Things that must never change casually: `hashMessage` (every catalog key
-depends on it), the canonicalization rules in `src/shared/canonical.ts`, and
-the message grammar — all three are shared contracts between the extractor,
-the loader, and the runtime.
+depends on it), the canonicalization rules in `src/shared/canonical.ts`, the
+message grammar, and the word/sentence splitting in `src/shared/speech.ts`
+(word indices in audio catalogs depend on it) — all are shared contracts
+between the extractor, the loader, the voice command, and the runtime.
 
 ## License
 

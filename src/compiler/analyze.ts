@@ -8,7 +8,8 @@
 
 import ts from "typescript";
 import { hashMessage } from "../shared/hash";
-import { parseMessage, escapeText } from "../shared/message";
+import { parseMessage, escapeText, type MessageNode } from "../shared/message";
+import { unspeakableReason } from "../shared/speech";
 import {
   NameAllocator,
   baseTagName,
@@ -24,6 +25,8 @@ export interface FoundMessage {
   hash: string;
   message: string;
   context?: string;
+  /** Voice key, or true for a keyless voiced message. */
+  voice?: string | true;
   line: number;
 }
 
@@ -72,9 +75,16 @@ export function analyzeSource(source: string, filePath: string): AnalyzeResult {
   const lineOf = (node: ts.Node): number =>
     sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
 
-  const record = (node: ts.Node, message: string, context?: string, id?: string) => {
+  const record = (
+    node: ts.Node,
+    message: string,
+    context?: string,
+    id?: string,
+    voice?: string | true,
+  ) => {
+    let nodes: MessageNode[];
     try {
-      parseMessage(message);
+      nodes = parseMessage(message);
     } catch (err) {
       diagnostics.push({
         line: lineOf(node),
@@ -82,10 +92,72 @@ export function analyzeSource(source: string, filePath: string): AnalyzeResult {
       });
       return null;
     }
+    if (voice !== undefined) {
+      const reason = unspeakableReason(nodes);
+      if (reason) {
+        diagnostics.push({
+          line: lineOf(node),
+          problem: `voiced message contains a ${reason} — spoken text must be static; the voice marker is ignored`,
+        });
+        voice = undefined;
+      }
+    }
     const hash = id ?? hashMessage(message, context);
-    messages.push({ hash, message, context, line: lineOf(node) });
+    const found: FoundMessage = { hash, message, context, line: lineOf(node) };
+    if (voice !== undefined) found.voice = voice;
+    messages.push(found);
     return hash;
   };
+
+  /**
+   * The `voice` marker: a bare attribute / `voice: true` voices without a
+   * key; a non-empty string literal is the key the app addresses it by.
+   * Returns undefined when absent, null when present but malformed.
+   */
+  const voiceFromAttribute = (
+    attr: ts.JsxAttribute | undefined,
+  ): string | true | null | undefined => {
+    if (!attr) return undefined;
+    if (!attr.initializer) return true;
+    const init = attr.initializer;
+    if (ts.isStringLiteral(init)) return init.text.trim() || null;
+    if (ts.isJsxExpression(init) && init.expression) {
+      const expr = init.expression;
+      if (expr.kind === ts.SyntaxKind.TrueKeyword) return true;
+      if (expr.kind === ts.SyntaxKind.FalseKeyword) return undefined;
+      if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) {
+        return expr.text.trim() || null;
+      }
+    }
+    return null;
+  };
+
+  const voiceFromObject = (
+    obj: ts.ObjectLiteralExpression,
+  ): string | true | null | undefined => {
+    for (const prop of obj.properties) {
+      if (
+        !ts.isPropertyAssignment(prop) ||
+        !(
+          (ts.isIdentifier(prop.name) && prop.name.text === "voice") ||
+          (ts.isStringLiteral(prop.name) && prop.name.text === "voice")
+        )
+      ) {
+        continue;
+      }
+      const init = prop.initializer;
+      if (init.kind === ts.SyntaxKind.TrueKeyword) return true;
+      if (init.kind === ts.SyntaxKind.FalseKeyword) return undefined;
+      if (ts.isStringLiteral(init) || ts.isNoSubstitutionTemplateLiteral(init)) {
+        return init.text.trim() || null;
+      }
+      return null;
+    }
+    return undefined;
+  };
+
+  const VOICE_PROBLEM =
+    "voice must be a bare attribute, true, or a non-empty string literal key";
 
   // ---- attribute helpers -------------------------------------------------
 
@@ -200,13 +272,25 @@ export function analyzeSource(source: string, filePath: string): AnalyzeResult {
       }
     }
 
+    const voice = voiceFromAttribute(findAttribute(attrs, "voice"));
+    if (voice === null) {
+      diagnostics.push({ line: lineOf(node), problem: VOICE_PROBLEM });
+      return;
+    }
+
     // Already carries a compiled/manual message — trust it, no edit.
     const messageAttr = findAttribute(attrs, "message");
     const idAttr = findAttribute(attrs, "id");
     if (messageAttr) {
       const manual = attributeStringValue(messageAttr);
       if (manual !== undefined) {
-        record(node, manual, context, idAttr && attributeStringValue(idAttr));
+        record(
+          node,
+          manual,
+          context,
+          idAttr && attributeStringValue(idAttr),
+          voice,
+        );
       }
       return;
     }
@@ -223,7 +307,7 @@ export function analyzeSource(source: string, filePath: string): AnalyzeResult {
       diagnostics.push({ line: lineOf(node), problem: "empty <Trans>" });
       return;
     }
-    const hash = record(node, message, context);
+    const hash = record(node, message, context, undefined, voice);
     if (!hash) return;
 
     let injection = ` id=${JSON.stringify(hash)} message={${JSON.stringify(message)}}`;
@@ -396,11 +480,16 @@ export function analyzeSource(source: string, filePath: string): AnalyzeResult {
       const message = objectPropertyString(first, "message");
       if (message === undefined) return false;
       const context = objectPropertyString(first, "context");
-      if (hasObjectProperty(first, "id")) {
-        record(node, message, context, objectPropertyString(first, "id"));
+      const voice = voiceFromObject(first);
+      if (voice === null) {
+        diagnostics.push({ line: lineOf(node), problem: VOICE_PROBLEM });
         return true;
       }
-      const hash = record(node, message, context);
+      if (hasObjectProperty(first, "id")) {
+        record(node, message, context, objectPropertyString(first, "id"), voice);
+        return true;
+      }
+      const hash = record(node, message, context, undefined, voice);
       if (!hash) return true;
       edits.push({
         start: first.getStart(sf) + 1,
@@ -415,6 +504,7 @@ export function analyzeSource(source: string, filePath: string): AnalyzeResult {
       if (!message.trim()) return false;
       let context: string | undefined;
       let valuesText: string | undefined;
+      let voice: string | true | undefined;
       if (second) {
         if (!ts.isObjectLiteralExpression(second)) {
           diagnostics.push({
@@ -424,6 +514,12 @@ export function analyzeSource(source: string, filePath: string): AnalyzeResult {
           return true;
         }
         context = objectPropertyString(second, "context");
+        const voiceValue = voiceFromObject(second);
+        if (voiceValue === null) {
+          diagnostics.push({ line: lineOf(node), problem: VOICE_PROBLEM });
+          return true;
+        }
+        voice = voiceValue;
         for (const prop of second.properties) {
           if (
             ts.isPropertyAssignment(prop) &&
@@ -435,11 +531,14 @@ export function analyzeSource(source: string, filePath: string): AnalyzeResult {
         }
         if (hasObjectProperty(second, "id")) return true; // already compiled
       }
-      const hash = record(node, message, context);
+      const hash = record(node, message, context, undefined, voice);
       if (!hash) return true;
       let replacement = `${fn}({ id: ${JSON.stringify(hash)}, message: ${JSON.stringify(message)}`;
       if (context !== undefined) {
         replacement += `, context: ${JSON.stringify(context)}`;
+      }
+      if (voice !== undefined) {
+        replacement += `, voice: ${JSON.stringify(voice)}`;
       }
       if (valuesText !== undefined) {
         replacement += `, values: ${valuesText}`;

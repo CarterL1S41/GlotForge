@@ -1,7 +1,7 @@
 {
   "name": "glotforge",
-  "version": "0.1.0",
-  "description": "Keyless i18n for TypeScript & React — write copy in your own language, ship every language. Content-hash catalogs, a build-time loader, and AI translation with glossary and context steering.",
+  "version": "1.0.0",
+  "description": "Keyless i18n for TypeScript & React — write copy in your own language, ship every language. Content-hash catalogs, a build-time loader, AI translation with glossary and context steering, and spoken audio with word timing.",
   "license": "MIT",
   "author": "Carter Long",
   "repository": {
@@ -22,7 +22,9 @@
     "nextjs",
     "ai",
     "icu",
-    "keyless"
+    "keyless",
+    "text-to-speech",
+    "tts"
   ],
   "engines": {
     "node": ">=18.17"
@@ -53,7 +55,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

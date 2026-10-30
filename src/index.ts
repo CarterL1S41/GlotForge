@@ -14,6 +14,17 @@ export type { TransProps, PluralProps } from "./runtime/trans";
 export { t, msg, createT, makeT } from "./runtime/t";
 export type { TFunction, MessageDescriptor, TOptions } from "./runtime/t";
 export { I18nDevtools } from "./runtime/devtools";
+export { useVoice, useVoicePlayer } from "./runtime/voice";
+export type {
+  VoiceRef,
+  ResolvedVoice,
+  ResolvedVoiceClip,
+  VoicePlayer,
+  VoicePlayerOptions,
+  VoicePlayerStatus,
+} from "./runtime/voice";
+export { splitWords, splitSentences } from "./shared/speech";
+export type { WordSpan } from "./shared/speech";
 export {
   readLocaleCookie,
   writeLocaleCookie,
@@ -33,4 +44,14 @@ export {
 } from "./runtime/format";
 export type { DateStyle } from "./runtime/format";
 export { hashMessage } from "./shared/hash";
-export type { Catalog, Manifest, MessageEntry, I18nConfig } from "./shared/types";
+export type {
+  Catalog,
+  Manifest,
+  MessageEntry,
+  I18nConfig,
+  VoiceManifest,
+  VoiceEntry,
+  VoiceClip,
+  VoiceWord,
+  VoiceTiming,
+} from "./shared/types";

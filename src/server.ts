@@ -38,4 +38,14 @@ export {
   escapeText,
 } from "./shared/message";
 export type { MessageNode } from "./shared/message";
-export type { Catalog, Manifest, MessageEntry, I18nConfig } from "./shared/types";
+export type {
+  Catalog,
+  Manifest,
+  MessageEntry,
+  I18nConfig,
+  VoiceManifest,
+  VoiceEntry,
+  VoiceClip,
+  VoiceWord,
+  VoiceTiming,
+} from "./shared/types";

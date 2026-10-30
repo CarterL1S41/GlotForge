@@ -27,12 +27,19 @@ export interface MessageDescriptor {
   message: string;
   context?: string;
   values?: Record<string, unknown>;
+  /** Voice key (or true) carried from the source marker; see useVoicePlayer. */
+  voice?: string | boolean;
 }
 
 export interface TOptions {
   id?: string;
   context?: string;
   values?: Record<string, unknown>;
+  /**
+   * Generate spoken audio for this message (`glotforge voice`). A string is
+   * the key the app plays it by. Not in the hash.
+   */
+  voice?: string | boolean;
 }
 
 export type TFunction = {
@@ -205,6 +212,7 @@ export function msg(
     message: escapeText(first as string),
     context: options.context,
     values: options.values,
+    voice: options.voice,
   };
 }
 

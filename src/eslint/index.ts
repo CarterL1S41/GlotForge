@@ -209,7 +209,7 @@ const noBlockInTrans: RuleModule = {
 const plugin = {
   meta: {
     name: "glotforge",
-    version: "0.1.5",
+    version: "1.0.0",
   },
   rules: {
     "no-bare-text": noBareText,

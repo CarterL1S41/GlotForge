@@ -1,5 +1,6 @@
 import type { ResolvedConfig } from "../shared/types";
 import { readCatalog, readManifest } from "./catalog";
+import { readVoiceManifest, voicedLocales } from "./voice-catalog";
 
 export interface LocaleStatus {
   locale: string;
@@ -9,9 +10,24 @@ export interface LocaleStatus {
   percent: number;
 }
 
+export interface VoiceStatus {
+  locale: string;
+  language: string;
+  voice: string;
+  /** Voiced messages with audio generated. */
+  generated: number;
+  /** Of those, with per-word timing. */
+  wordTimed: number;
+  missing: number;
+}
+
 export interface StatusSummary {
   totalMessages: number;
   locales: LocaleStatus[];
+  /** Voiced messages in the manifest. */
+  voicedMessages: number;
+  /** One row per locale with a configured voice (source locale included). */
+  voice: VoiceStatus[];
 }
 
 export function computeStatus(config: ResolvedConfig, cwd: string): StatusSummary {
@@ -29,7 +45,23 @@ export function computeStatus(config: ResolvedConfig, cwd: string): StatusSummar
       percent: hashes.length ? Math.round((translated / hashes.length) * 100) : 100,
     };
   });
-  return { totalMessages: hashes.length, locales };
+  const voicedHashes = hashes.filter((hash) => manifest[hash].voice !== undefined);
+  const voice = voicedLocales(config).map((locale) => {
+    const voiceManifest = readVoiceManifest(config, cwd, locale);
+    const generated = voicedHashes.filter((hash) => voiceManifest.entries[hash]).length;
+    const wordTimed = voicedHashes.filter(
+      (hash) => voiceManifest.entries[hash]?.timing !== undefined && voiceManifest.entries[hash].timing !== "sentence",
+    ).length;
+    return {
+      locale,
+      language: displayNames?.of(locale) ?? locale,
+      voice: config.voice.voices[locale],
+      generated,
+      wordTimed,
+      missing: voicedHashes.length - generated,
+    };
+  });
+  return { totalMessages: hashes.length, locales, voicedMessages: voicedHashes.length, voice };
 }
 
 export function languageLabel(locale: string): string {
@@ -59,4 +91,31 @@ export function printStatus(summary: StatusSummary): void {
     );
   }
   console.log("");
+  if (summary.voicedMessages > 0 || summary.voice.length > 0) {
+    console.log(`${summary.voicedMessages} voiced messages\n`);
+    if (!summary.voice.length) {
+      console.log("  no voices configured — add voice.voices to i18n.config.json\n");
+      return;
+    }
+    const width = Math.max(...summary.voice.map((s) => s.locale.length), 6);
+    for (const status of summary.voice) {
+      const percent = summary.voicedMessages
+        ? Math.round((status.generated / summary.voicedMessages) * 100)
+        : 100;
+      const bar =
+        "█".repeat(Math.round(percent / 5)) + "░".repeat(20 - Math.round(percent / 5));
+      console.log(
+        `  ${status.locale.padEnd(width)}  ${bar} ${String(percent).padStart(3)}%  ` +
+          `${status.generated}/${summary.voicedMessages} voiced` +
+          (status.wordTimed < status.generated
+            ? `, ${status.generated - status.wordTimed} sentence-timed only`
+            : status.generated
+              ? ", word-timed"
+              : "") +
+          (status.missing ? `, ${status.missing} missing` : "") +
+          `  (${status.language}, ${status.voice})`,
+      );
+    }
+    console.log("");
+  }
 }

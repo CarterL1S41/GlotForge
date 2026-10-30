@@ -27,6 +27,17 @@ export interface TransProps {
    * "wire as in wire request". Participates in the hash.
    */
   context?: string;
+  /**
+   * Generate spoken audio for this message (`glotforge voice`). A string is
+   * the key the app plays it by: useVoicePlayer("intro"). Not in the hash.
+   */
+  voice?: string | boolean;
+  /**
+   * Word-highlight mode: when set (even to null) every word renders in a
+   * <span data-voice-word={n}>, and the word whose index equals the value
+   * also gets data-voice-active. Feed it useVoicePlayer(...).word.
+   */
+  highlight?: number | null;
 }
 
 const parseCache = new Map<string, MessageNode[] | null>();
@@ -149,6 +160,10 @@ export function Trans(props: TransProps): ReactNode {
     values: props.values,
     tags: walk.tags,
     pseudo,
+    words:
+      props.highlight !== undefined
+        ? { active: props.highlight, index: 0 }
+        : undefined,
   });
 
   if (ctx?.devtoolsActive) {

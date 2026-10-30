@@ -8,6 +8,7 @@
  *                      [--force] [--yes] [--dry-run] [--no-thinking]
  *                      [--effort low|medium|high|xhigh|max]
  *                      [--model id] [--batch-size n]
+ *   glotforge voice [--locale a,b] [--force] [--yes] [--dry-run]
  *   glotforge status [--json]
  */
 
@@ -17,6 +18,7 @@ import { CONFIG_FILE, loadConfig } from "./config";
 import { loadEnvFiles } from "./env";
 import { runExtract } from "./extract";
 import { runTranslate } from "./translate";
+import { runVoice } from "./voice";
 import { computeStatus, printStatus } from "./status";
 
 interface ParsedArgs {
@@ -71,16 +73,18 @@ Commands:
   init        Scaffold ${CONFIG_FILE} and the catalog directory
   extract     Scan source, reconcile messages.json, prune orphaned translations
   translate   Fill missing catalog entries via the Claude API (thinking on by default)
-  status      Per-locale translation coverage
+  voice       Generate spoken audio (+ word timing) for messages marked voice
+  status      Per-locale translation and audio coverage
 
 Common flags:
   --include <glob>[,glob]   Limit extract/translate to matching files
   --exclude <glob>[,glob]   Skip matching files
-  translate only:
+  translate and voice:
   --locale <a,b>            Target specific locales
-  --force                   Retranslate messages already in the catalog (in scope)
+  --force                   Regenerate entries already in the catalog (in scope)
   --dry-run                 Show the cost estimate and exit
   --yes / -y                Skip the confirmation prompt
+  translate only:
   --no-thinking             Force thinking OFF for all locales this run
   --thinking                Force thinking ON for all locales this run
   --effort <level>          low | medium | high | xhigh | max
@@ -94,8 +98,10 @@ e.g. "overrides": { "am-ET": { "thinking": true } } — CLI flags outrank them.
   status only:
   --json                    Machine-readable output
 
-Catalog files (messages.json, catalog/<locale>.json) are committed to git —
-they ARE the translation cache; never gitignore them.`;
+Catalog files (messages.json, catalog/<locale>.json, voice/<locale>.json and
+the clip files) are committed to git — they ARE the cache; never gitignore
+them. voice needs Google credentials: GOOGLE_APPLICATION_CREDENTIALS (a
+service-account key) or GOOGLE_TTS_KEY (an API key, plus voice.project).`;
 
 const CONFIG_TEMPLATE = {
   locales: ["es-ES", "fr-FR", "pt-BR", "id-ID", "ja-JP", "ko-KR"],
@@ -198,6 +204,16 @@ async function main(): Promise<void> {
       batchSize: flags.get("batch-size")
         ? Number(flags.get("batch-size")![0])
         : undefined,
+    });
+    return;
+  }
+
+  if (command === "voice") {
+    await runVoice(config, cwd, {
+      locales: flags.get("locale"),
+      force: booleans.has("force"),
+      yes: booleans.has("yes"),
+      dryRun: booleans.has("dry-run"),
     });
     return;
   }
