@@ -14,7 +14,8 @@ export type { TransProps, PluralProps } from "./runtime/trans";
 export { t, msg, createT, makeT } from "./runtime/t";
 export type { TFunction, MessageDescriptor, TOptions } from "./runtime/t";
 export { I18nDevtools } from "./runtime/devtools";
-export { useVoice, useVoicePlayer } from "./runtime/voice";
+export { useVoice, useVoicePlayer, useVoiceVariants } from "./runtime/voice";
+export { DEFAULT_VOICE_VARIANT } from "./shared/types";
 export type {
   VoiceRef,
   ResolvedVoice,

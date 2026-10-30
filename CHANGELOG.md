@@ -4,16 +4,37 @@ All notable changes to GlotForge. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-10-30
+
+### Added
+
+- **Voice variants.** A locale's entry in `voice.voices` can be a map of
+  named voices (`{ "female": "...Aoede", "male": "...Charon" }`) instead of
+  one string. Every variant is synthesized and word-timed on its own; clips
+  are named `<hash>-<variant>-<n>`, and the audio catalog keys entries by
+  hash then variant and lists the locale's `variants` in config order. A
+  plain string still works as a single variant named `default`. Removing a
+  variant from config drops its entries and files on the next `voice` run.
+- Runtime: `voiceVariant` / `setVoiceVariant` on the provider (persisted
+  locally), `useVoiceVariants()` for pickers, a `variant` option on
+  `useVoicePlayer` and a second argument on `useVoice`. A variant the
+  current locale lacks falls back to the locale's first; the resolved name
+  is reported on `ResolvedVoice.variant`.
+- `status` reports audio coverage per locale and variant.
+
+### Changed
+
+- Audio catalog format: `entries[hash]` is now `entries[hash][variant]`
+  and the manifest carries `variants`. Catalogs written by 1.0.x are not
+  read; delete `i18n/voice/` and the clip directory and run
+  `glotforge voice` again.
+
 ## [1.0.1] — 2026-10-30
 
 ### Changed
 
-- The release workflow publishes through npm Trusted Publishing (GitHub
-  OIDC with `id-token: write`, Node 24, provenance attached) instead of a
-  stored `NPM_TOKEN` secret. README documents the one-time trusted
-  publisher setup on npmjs.com.
-
-No package code changed.
+- Releases publish through npm Trusted Publishing with provenance
+  attestations instead of a stored registry token.
 
 ## [1.0.0] — 2026-10-30
 
@@ -109,6 +130,7 @@ Initial release.
 - CI on `develop` and `main`; release workflow on `v*` tags publishing to
   npm.
 
+[1.1.0]: https://github.com/CarterL1S41/GlotForge/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/CarterL1S41/GlotForge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/CarterL1S41/GlotForge/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/CarterL1S41/GlotForge/releases/tag/v0.1.0

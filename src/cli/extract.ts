@@ -210,9 +210,11 @@ export function runExtract(
   for (const locale of voiceManifestLocales(config, cwd)) {
     const voiceManifest = readVoiceManifest(config, cwd, locale);
     let changed = false;
-    for (const [hash, entry] of Object.entries(voiceManifest.entries)) {
+    for (const [hash, byVariant] of Object.entries(voiceManifest.entries)) {
       if (!next[hash] || next[hash].voice === undefined) {
-        deleteClips(config, cwd, entry.clips.map((clip) => clip.file));
+        for (const entry of Object.values(byVariant)) {
+          deleteClips(config, cwd, entry.clips.map((clip) => clip.file));
+        }
         delete voiceManifest.entries[hash];
         changed = true;
       }

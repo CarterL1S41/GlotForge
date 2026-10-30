@@ -24,6 +24,8 @@ export interface ResolvedVoiceClip extends VoiceClip {
 
 export interface ResolvedVoice {
   id: string;
+  /** The variant actually resolved (the preferred one, or the locale's first). */
+  variant: string;
   entry: VoiceEntry;
   clips: ResolvedVoiceClip[];
   /** Words across every clip (0 when the entry is sentence-timed only). */
@@ -37,12 +39,26 @@ function joinUrl(base: string, file: string): string {
 }
 
 /**
+ * Variant names the active locale's audio catalog offers, in config order,
+ * for a voice picker. Empty while loading or when the locale has no audio.
+ */
+export function useVoiceVariants(): string[] {
+  const { voiceManifest } = useI18n();
+  return voiceManifest?.variants ?? [];
+}
+
+/**
  * The generated audio for a message in the active locale, or null while the
  * audio catalog is loading, when the message has no audio, or when the app
- * never loads audio catalogs.
+ * never loads audio catalogs. `variant` overrides the provider's preferred
+ * variant; a variant the entry lacks falls back to the locale's first.
  */
-export function useVoice(ref: VoiceRef | null | undefined): ResolvedVoice | null {
-  const { voiceManifest, audioBaseUrl } = useI18n();
+export function useVoice(
+  ref: VoiceRef | null | undefined,
+  variant?: string | null,
+): ResolvedVoice | null {
+  const { voiceManifest, audioBaseUrl, voiceVariant } = useI18n();
+  const wanted = variant === undefined ? voiceVariant : variant;
   return useMemo(() => {
     if (!ref || !voiceManifest) return null;
     let id: string | undefined;
@@ -54,8 +70,13 @@ export function useVoice(ref: VoiceRef | null | undefined): ResolvedVoice | null
       id = hashMessage(ref.message, ref.context);
     }
     if (!id) return null;
-    const entry = voiceManifest.entries[id];
-    if (!entry) return null;
+    const byVariant = voiceManifest.entries[id];
+    if (!byVariant) return null;
+    const available = voiceManifest.variants.filter((name) => byVariant[name]);
+    const resolvedVariant =
+      wanted && byVariant[wanted] ? wanted : (available[0] ?? Object.keys(byVariant)[0]);
+    if (!resolvedVariant) return null;
+    const entry = byVariant[resolvedVariant];
     let wordOffset = 0;
     let offsetMs = 0;
     const clips = entry.clips.map((clip) => {
@@ -69,8 +90,15 @@ export function useVoice(ref: VoiceRef | null | undefined): ResolvedVoice | null
       offsetMs += clip.durationMs;
       return resolved;
     });
-    return { id, entry, clips, wordCount: wordOffset, durationMs: offsetMs };
-  }, [ref, voiceManifest, audioBaseUrl]);
+    return {
+      id,
+      variant: resolvedVariant,
+      entry,
+      clips,
+      wordCount: wordOffset,
+      durationMs: offsetMs,
+    };
+  }, [ref, wanted, voiceManifest, audioBaseUrl]);
 }
 
 export type VoicePlayerStatus = "idle" | "playing" | "paused" | "ended";
@@ -107,6 +135,8 @@ export interface VoicePlayerOptions {
   onEnd?: () => void;
   /** Playback rate applied to every clip. Default 1. */
   rate?: number;
+  /** Voice variant for this player; default is the provider's preferred one. */
+  variant?: string | null;
 }
 
 function wordAt(clip: ResolvedVoiceClip, clipMs: number): number | null {
@@ -132,7 +162,7 @@ export function useVoicePlayer(
   ref: VoiceRef | null | undefined,
   options: VoicePlayerOptions = {},
 ): VoicePlayer {
-  const voice = useVoice(ref);
+  const voice = useVoice(ref, options.variant);
   const { locale } = useI18n();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clipRef = useRef<number>(0);
@@ -252,7 +282,7 @@ export function useVoicePlayer(
     };
   }, [audio, startSampling, stopSampling]);
 
-  // A locale or message change invalidates the loaded clips.
+  // A locale, variant or message change invalidates the loaded clips.
   useEffect(() => {
     const el = audioRef.current;
     if (el) {
@@ -266,7 +296,7 @@ export function useVoicePlayer(
     setClip(null);
     setWord(null);
     setCurrentMs(0);
-  }, [voice?.id, locale, stopSampling]);
+  }, [voice?.id, voice?.variant, locale, stopSampling]);
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = rate;

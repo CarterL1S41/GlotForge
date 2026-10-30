@@ -97,6 +97,13 @@ export interface I18nContextValue {
   /** "unavailable" when no loadVoiceManifest was given. */
   voiceStatus: "ready" | "loading" | "unavailable";
   audioBaseUrl: string;
+  /**
+   * The user's preferred voice variant (e.g. "female"), or null for each
+   * locale's default. Persisted locally; a locale that lacks the variant
+   * falls back to its first one.
+   */
+  voiceVariant: string | null;
+  setVoiceVariant: (variant: string | null) => void;
 }
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -256,6 +263,18 @@ export function I18nProvider(props: I18nProviderProps) {
   }, [effectiveLocale, loadVoiceManifest, voiceCacheKey]);
   const activeVoiceManifest = voiceManifests[effectiveLocale] ?? null;
 
+  const [voiceVariant, setVoiceVariantState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return safeStorageGet(`${storagePrefix}:voice-variant`);
+  });
+  const setVoiceVariant = useCallback(
+    (variant: string | null) => {
+      setVoiceVariantState(variant);
+      safeStorageSet(`${storagePrefix}:voice-variant`, variant ?? "");
+    },
+    [storagePrefix],
+  );
+
   const setLocale = useCallback(
     (next: string) => {
       setLocaleState(next);
@@ -324,6 +343,8 @@ export function I18nProvider(props: I18nProviderProps) {
           ? "ready"
           : "loading",
       audioBaseUrl,
+      voiceVariant: voiceVariant || null,
+      setVoiceVariant,
     }),
     [
       locale,
@@ -340,6 +361,8 @@ export function I18nProvider(props: I18nProviderProps) {
       activeVoiceManifest,
       loadVoiceManifest,
       audioBaseUrl,
+      voiceVariant,
+      setVoiceVariant,
     ],
   );
 

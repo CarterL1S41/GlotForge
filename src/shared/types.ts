@@ -59,11 +59,16 @@ export interface VoiceEntry {
  * missing or stale.
  */
 export interface VoiceManifest {
+  /** Variant names configured for this locale, in config order; the first is the default. */
+  variants: string[];
   /** Voice key -> message hash, for every voiced message that has a key. */
   keys: Record<string, string>;
-  /** Message hash -> generated audio. */
-  entries: Record<string, VoiceEntry>;
+  /** Message hash -> variant name -> generated audio. */
+  entries: Record<string, Record<string, VoiceEntry>>;
 }
+
+/** Variant name used when a locale configures a single voice as a plain string. */
+export const DEFAULT_VOICE_VARIANT = "default";
 
 /** i18n.config.json — lives at the consuming app's repo root. */
 export interface I18nConfig {
@@ -165,12 +170,17 @@ export interface I18nConfig {
    */
   voice?: {
     /**
-     * Google voice name per locale, including the source locale, e.g.
-     *   "voices": { "en-US": "en-US-Chirp3-HD-Aoede", "es-ES": "es-ES-Chirp3-HD-Kore" }
+     * Google voice per locale, including the source locale. A string is a
+     * single voice; a map is a set of named variants the app can let the
+     * user choose between (the first is the default):
+     *   "voices": {
+     *     "en-US": { "female": "en-US-Chirp3-HD-Aoede", "male": "en-US-Chirp3-HD-Charon" },
+     *     "es-ES": "es-ES-Chirp3-HD-Kore"
+     *   }
      * The name selects the family (Chirp3-HD, Neural2, Wavenet, Standard).
      * A locale without an entry gets no audio.
      */
-    voices?: Record<string, string>;
+    voices?: Record<string, string | Record<string, string>>;
     /**
      * Google Cloud project id. Required with an API key; read from the
      * service-account file when credentials are used. Also honoured from
@@ -226,5 +236,8 @@ export interface I18nConfig {
 export interface ResolvedConfig
   extends Required<Omit<I18nConfig, "translation" | "voice">> {
   translation: Required<NonNullable<I18nConfig["translation"]>>;
-  voice: Required<NonNullable<I18nConfig["voice"]>>;
+  voice: Omit<Required<NonNullable<I18nConfig["voice"]>>, "voices"> & {
+    /** Normalized: locale -> variant name -> Google voice name, config order kept. */
+    voices: Record<string, Record<string, string>>;
+  };
 }

@@ -27,8 +27,14 @@ export function audioDir(config: ResolvedConfig, cwd: string): string {
 }
 
 /** Relative clip path as stored in the manifest (forward slashes). */
-export function clipFile(locale: string, hash: string, index: number, format: "MP3" | "LINEAR16"): string {
-  return `${locale}/${hash}-${index}.${format === "MP3" ? "mp3" : "wav"}`;
+export function clipFile(
+  locale: string,
+  hash: string,
+  variant: string,
+  index: number,
+  format: "MP3" | "LINEAR16",
+): string {
+  return `${locale}/${hash}-${variant}-${index}.${format === "MP3" ? "mp3" : "wav"}`;
 }
 
 export function readVoiceManifest(
@@ -37,14 +43,19 @@ export function readVoiceManifest(
   locale: string,
 ): VoiceManifest {
   const file = voiceManifestPath(config, cwd, locale);
-  if (!fs.existsSync(file)) return { keys: {}, entries: {} };
+  const variants = Object.keys(config.voice.voices[locale] ?? {});
+  if (!fs.existsSync(file)) return { variants, keys: {}, entries: {} };
   let parsed: Partial<VoiceManifest>;
   try {
     parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<VoiceManifest>;
   } catch (err) {
     throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
   }
-  return { keys: parsed.keys ?? {}, entries: parsed.entries ?? {} };
+  return {
+    variants: variants.length ? variants : (parsed.variants ?? []),
+    keys: parsed.keys ?? {},
+    entries: parsed.entries ?? {},
+  };
 }
 
 export function writeVoiceManifest(
@@ -59,13 +70,31 @@ export function writeVoiceManifest(
   for (const key of Object.keys(manifest.keys).sort()) sortedKeys[key] = manifest.keys[key];
   const sortedEntries: VoiceManifest["entries"] = {};
   for (const hash of Object.keys(manifest.entries).sort()) {
-    sortedEntries[hash] = manifest.entries[hash];
+    const variants = manifest.entries[hash];
+    if (!Object.keys(variants).length) continue;
+    sortedEntries[hash] = variants;
   }
   fs.writeFileSync(
     file,
-    JSON.stringify({ keys: sortedKeys, entries: sortedEntries }, null, 2) + "\n",
+    JSON.stringify(
+      { variants: manifest.variants, keys: sortedKeys, entries: sortedEntries },
+      null,
+      2,
+    ) + "\n",
     "utf8",
   );
+}
+
+/** Every clip file referenced by a manifest's entries (optionally one hash). */
+export function manifestClipFiles(manifest: VoiceManifest, hash?: string): string[] {
+  const files: string[] = [];
+  for (const [h, variants] of Object.entries(manifest.entries)) {
+    if (hash !== undefined && h !== hash) continue;
+    for (const entry of Object.values(variants)) {
+      for (const clip of entry.clips) files.push(clip.file);
+    }
+  }
+  return files;
 }
 
 /** Delete every clip file of an entry; missing files are not an error. */
@@ -98,7 +127,7 @@ export function writeClip(
 /** Every locale that gets audio: configured voices, source locale included. */
 export function voicedLocales(config: ResolvedConfig): string[] {
   return [config.sourceLocale, ...config.locales].filter(
-    (locale) => Boolean(config.voice.voices[locale]),
+    (locale) => Object.keys(config.voice.voices[locale] ?? {}).length > 0,
   );
 }
 

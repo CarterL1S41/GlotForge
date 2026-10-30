@@ -1,4 +1,4 @@
-import type { ResolvedConfig } from "../shared/types";
+import { DEFAULT_VOICE_VARIANT, type ResolvedConfig } from "../shared/types";
 import { readCatalog, readManifest } from "./catalog";
 import { readVoiceManifest, voicedLocales } from "./voice-catalog";
 
@@ -12,6 +12,8 @@ export interface LocaleStatus {
 
 export interface VoiceStatus {
   locale: string;
+  /** Variant name ("default" for a single-voice locale). */
+  variant: string;
   language: string;
   voice: string;
   /** Voiced messages with audio generated. */
@@ -46,20 +48,24 @@ export function computeStatus(config: ResolvedConfig, cwd: string): StatusSummar
     };
   });
   const voicedHashes = hashes.filter((hash) => manifest[hash].voice !== undefined);
-  const voice = voicedLocales(config).map((locale) => {
+  const voice = voicedLocales(config).flatMap((locale) => {
     const voiceManifest = readVoiceManifest(config, cwd, locale);
-    const generated = voicedHashes.filter((hash) => voiceManifest.entries[hash]).length;
-    const wordTimed = voicedHashes.filter(
-      (hash) => voiceManifest.entries[hash]?.timing !== undefined && voiceManifest.entries[hash].timing !== "sentence",
-    ).length;
-    return {
-      locale,
-      language: displayNames?.of(locale) ?? locale,
-      voice: config.voice.voices[locale],
-      generated,
-      wordTimed,
-      missing: voicedHashes.length - generated,
-    };
+    return Object.entries(config.voice.voices[locale]).map(([variant, voiceName]) => {
+      const generated = voicedHashes.filter((hash) => voiceManifest.entries[hash]?.[variant]).length;
+      const wordTimed = voicedHashes.filter((hash) => {
+        const entry = voiceManifest.entries[hash]?.[variant];
+        return entry !== undefined && entry.timing !== "sentence";
+      }).length;
+      return {
+        locale,
+        variant,
+        language: displayNames?.of(locale) ?? locale,
+        voice: voiceName,
+        generated,
+        wordTimed,
+        missing: voicedHashes.length - generated,
+      };
+    });
   });
   return { totalMessages: hashes.length, locales, voicedMessages: voicedHashes.length, voice };
 }
@@ -97,7 +103,9 @@ export function printStatus(summary: StatusSummary): void {
       console.log("  no voices configured — add voice.voices to i18n.config.json\n");
       return;
     }
-    const width = Math.max(...summary.voice.map((s) => s.locale.length), 6);
+    const label = (s: VoiceStatus) =>
+      s.variant === DEFAULT_VOICE_VARIANT ? s.locale : `${s.locale} / ${s.variant}`;
+    const width = Math.max(...summary.voice.map((s) => label(s).length), 6);
     for (const status of summary.voice) {
       const percent = summary.voicedMessages
         ? Math.round((status.generated / summary.voicedMessages) * 100)
@@ -105,7 +113,7 @@ export function printStatus(summary: StatusSummary): void {
       const bar =
         "█".repeat(Math.round(percent / 5)) + "░".repeat(20 - Math.round(percent / 5));
       console.log(
-        `  ${status.locale.padEnd(width)}  ${bar} ${String(percent).padStart(3)}%  ` +
+        `  ${label(status).padEnd(width)}  ${bar} ${String(percent).padStart(3)}%  ` +
           `${status.generated}/${summary.voicedMessages} voiced` +
           (status.wordTimed < status.generated
             ? `, ${status.generated - status.wordTimed} sentence-timed only`

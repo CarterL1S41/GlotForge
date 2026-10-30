@@ -43,9 +43,9 @@ Each app owns an `i18n/` directory, **committed to git — never gitignored**:
 i18n/messages.json          hash -> { message, context?, origins, voice? }   (the manifest)
 i18n/catalog/es-ES.json     hash -> translated string                        (one per locale)
 i18n/catalog/id-ID.json
-i18n/voice/en-US.json       voice keys + hash -> clips with word timing      (one per voiced locale)
-i18n/voice/es-ES.json
-public/audio/i18n/es-ES/    <hash>-<n>.mp3, one file per sentence
+i18n/voice/en-US.json       variants + voice keys + hash -> variant -> clips with word timing
+i18n/voice/es-ES.json                                                        (one per voiced locale)
+public/audio/i18n/es-ES/    <hash>-<variant>-<n>.mp3, one file per sentence per voice
 ```
 
 The committed catalogs ARE the translation cache. `glotforge translate` only
@@ -415,8 +415,8 @@ fine — their words are spoken in place.
 ```json
 "voice": {
   "voices": {
-    "en-US": "en-US-Chirp3-HD-Aoede",
-    "es-ES": "es-ES-Chirp3-HD-Kore",
+    "en-US": { "female": "en-US-Chirp3-HD-Aoede", "male": "en-US-Chirp3-HD-Charon" },
+    "es-ES": { "female": "es-ES-Chirp3-HD-Kore", "male": "es-ES-Chirp3-HD-Puck" },
     "fr-FR": "fr-FR-Neural2-A"
   },
   "format": "MP3",
@@ -426,8 +426,12 @@ fine — their words are spoken in place.
 }
 ```
 
-- `voices` — one Google Cloud Text-to-Speech voice name per locale, the
-  source locale included. The name picks the family: Chirp 3 HD, Neural2,
+- `voices` — Google Cloud Text-to-Speech voices per locale, the source
+  locale included. A string is one voice; a map is a set of named
+  **variants** the user can choose between (names are yours: `female` /
+  `male`, `narrator` / `child`), the first being the default. Each variant
+  is synthesized and timed separately, so two variants cost twice the
+  characters. The voice name picks the family: Chirp 3 HD, Neural2,
   WaveNet, Standard. A locale without a voice gets no audio, which is how
   languages Chirp 3 does not cover fall back to an older family or stay
   silent.
@@ -471,10 +475,10 @@ npx glotforge voice --dry-run
 npx glotforge voice --force         # regenerate everything in scope
 ```
 
-Each voiced message becomes one clip per sentence (locale-aware sentence
-splitting, so Japanese and Thai split correctly), named
-`<hash>-<n>.mp3` under `<audioDir>/<locale>/`. The audio catalog records,
-per clip, the sentence text, its duration, and the word offsets in
+Each voiced message becomes one clip per sentence per variant (locale-aware
+sentence splitting, so Japanese and Thai split correctly), named
+`<hash>-<variant>-<n>.mp3` under `<audioDir>/<locale>/`. The audio catalog
+records, per clip, the sentence text, its duration, and the word offsets in
 milliseconds. An entry is regenerated when its voice, format, pace or
 translated text changes; everything else is left alone. Translations must
 exist first — run `translate` before `voice`. `status` reports audio
@@ -521,6 +525,25 @@ the resolved clips (with URLs) for custom players. A ref is a voice key, a
 `msg()` descriptor, or a raw hash. Entries without word timing still report
 the clip index, so sentence-level highlighting always works.
 
+**Letting the user pick a voice.** When a locale configures variants, the
+provider keeps the user's preference:
+
+```tsx
+const { voiceVariant, setVoiceVariant } = useI18n();
+const variants = useVoiceVariants(); // e.g. ["female", "male"] for the active locale
+
+{variants.map((name) => (
+  <button key={name} onClick={() => setVoiceVariant(name)} aria-pressed={voiceVariant === name}>
+    {name}
+  </button>
+))}
+```
+
+The preference is stored locally and applies to every player. A locale that
+lacks the chosen variant plays its first one; `player.voice.variant` tells
+you which was used. `useVoicePlayer(ref, { variant })` overrides the
+preference for one player.
+
 Word numbering is shared between the CLI and the renderer, so keep a word
 inside one element — `<b>un</b>related` would count as two words on screen
 and one in the audio.
@@ -542,16 +565,13 @@ runs on pushes and PRs to both. To release, merge to `main`, bump `version`
 in package.json, add the entry to [CHANGELOG.md](./CHANGELOG.md), then:
 
 ```
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 The release workflow verifies the tag matches package.json and publishes to
-the public npm registry through npm Trusted Publishing (GitHub OIDC, no
-stored token, provenance attached). The trusted publisher is configured on
-npmjs.com under the package's Settings: GitHub, owner `CarterL1S41`,
-repository `GlotForge`, workflow `release.yml`. A brand-new package has to
-be published once from a terminal before that setting exists.
+the public npm registry through npm Trusted Publishing (GitHub OIDC with
+provenance; no stored token).
 
 ## Development
 

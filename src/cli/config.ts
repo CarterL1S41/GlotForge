@@ -1,6 +1,10 @@
 import fs from "fs";
 import path from "path";
-import type { I18nConfig, ResolvedConfig } from "../shared/types";
+import {
+  DEFAULT_VOICE_VARIANT,
+  type I18nConfig,
+  type ResolvedConfig,
+} from "../shared/types";
 
 export const CONFIG_FILE = "i18n.config.json";
 
@@ -77,8 +81,28 @@ function resolveVoice(
   ) {
     throw new Error(`${CONFIG_FILE}: voice.speakingRate must be between 0.25 and 2.`);
   }
+  const voices: Record<string, Record<string, string>> = {};
+  for (const [locale, value] of Object.entries(raw.voices ?? {})) {
+    if (typeof value === "string") {
+      if (value.trim()) voices[locale] = { [DEFAULT_VOICE_VARIANT]: value.trim() };
+      continue;
+    }
+    const variants: Record<string, string> = {};
+    for (const [name, voice] of Object.entries(value ?? {})) {
+      if (!/^[a-z0-9][a-z0-9_-]*$/i.test(name)) {
+        throw new Error(
+          `${CONFIG_FILE}: voice variant "${name}" for ${locale} must be a simple name (letters, digits, - and _) — it becomes part of clip file names.`,
+        );
+      }
+      if (typeof voice !== "string" || !voice.trim()) {
+        throw new Error(`${CONFIG_FILE}: voice variant "${name}" for ${locale} needs a voice name.`);
+      }
+      variants[name] = voice.trim();
+    }
+    if (Object.keys(variants).length) voices[locale] = variants;
+  }
   return {
-    voices: raw.voices ?? {},
+    voices,
     project: raw.project ?? "",
     credentialsEnv: raw.credentialsEnv ?? "GOOGLE_APPLICATION_CREDENTIALS",
     apiKeyEnv: raw.apiKeyEnv ?? "GOOGLE_TTS_KEY",

@@ -3,12 +3,13 @@ import path from "path";
 import readline from "readline";
 import { parseMessage } from "../shared/message";
 import { plainTextOf, splitSentences, splitWords, unspeakableReason } from "../shared/speech";
-import type {
-  ResolvedConfig,
-  VoiceClip,
-  VoiceEntry,
-  VoiceManifest,
-  VoiceTiming,
+import {
+  DEFAULT_VOICE_VARIANT,
+  type ResolvedConfig,
+  type VoiceClip,
+  type VoiceEntry,
+  type VoiceManifest,
+  type VoiceTiming,
 } from "../shared/types";
 import { alignWords, wordsFromMarks } from "./align";
 import { audioDurationMs } from "./audio";
@@ -48,6 +49,7 @@ type TimingMode = "marks" | "align" | "none";
 
 interface EntryTask {
   locale: string;
+  variant: string;
   hash: string;
   key?: string;
   sentences: string[];
@@ -150,18 +152,30 @@ export async function runVoice(
   let alreadyCurrent = 0;
 
   for (const locale of targetLocales) {
-    const voice = config.voice.voices[locale];
-    const timingMode = timingModeFor(config, voice);
+    const variants = config.voice.voices[locale];
     const existing = readVoiceManifest(config, cwd, locale);
     const catalog = locale === config.sourceLocale ? null : readCatalog(config, cwd, locale);
 
     // Keys are rebuilt from the manifest every run so renames never leave a
-    // stale key behind.
+    // stale key behind; variants no longer configured are dropped with
+    // their files.
     const keys: Record<string, string> = {};
     for (const [hash, entry] of voiced) {
       if (typeof entry.voice === "string") keys[entry.voice] = hash;
     }
-    const next: VoiceManifest = { keys, entries: { ...existing.entries } };
+    const next: VoiceManifest = {
+      variants: Object.keys(variants),
+      keys,
+      entries: {},
+    };
+    for (const [hash, byVariant] of Object.entries(existing.entries)) {
+      const kept: Record<string, VoiceEntry> = {};
+      for (const [name, entry] of Object.entries(byVariant)) {
+        if (variants[name]) kept[name] = entry;
+        else deleteClips(config, cwd, entry.clips.map((clip) => clip.file));
+      }
+      if (Object.keys(kept).length) next.entries[hash] = kept;
+    }
     voiceManifests.set(locale, next);
 
     for (const [hash, entry] of voiced) {
@@ -184,32 +198,36 @@ export async function runVoice(
         continue;
       }
       if (!sentences.length) continue;
-      const base = {
-        locale,
-        hash,
-        key: typeof entry.voice === "string" ? entry.voice : undefined,
-        sentences,
-        voice,
-        timingMode,
-      };
-      const state = options.force ? "stale" : entryIsCurrent(existing.entries[hash], base, config);
-      if (state === "current") {
-        alreadyCurrent++;
-        continue;
+      for (const [variant, voice] of Object.entries(variants)) {
+        const timingMode = timingModeFor(config, voice);
+        const base = {
+          locale,
+          variant,
+          hash,
+          key: typeof entry.voice === "string" ? entry.voice : undefined,
+          sentences,
+          voice,
+          timingMode,
+        };
+        const current = next.entries[hash]?.[variant];
+        const state = options.force ? "stale" : entryIsCurrent(current, base, config);
+        if (state === "current") {
+          alreadyCurrent++;
+          continue;
+        }
+        // Existing audio can be kept when only the timing changed — except
+        // for marks, which only come back from a fresh synthesis.
+        const filesOnDisk =
+          state === "timing-only" &&
+          timingMode !== "marks" &&
+          current !== undefined &&
+          current.clips.every((clip) => fs.existsSync(path.join(audioDir(config, cwd), clip.file)));
+        tasks.push({
+          ...base,
+          reuse: filesOnDisk ? current : undefined,
+          previousFiles: current ? current.clips.map((clip) => clip.file) : [],
+        });
       }
-      const current = existing.entries[hash];
-      // Existing audio can be kept when only the timing changed — except
-      // for marks, which only come back from a fresh synthesis.
-      const filesOnDisk =
-        state === "timing-only" &&
-        timingMode !== "marks" &&
-        current !== undefined &&
-        current.clips.every((clip) => fs.existsSync(path.join(audioDir(config, cwd), clip.file)));
-      tasks.push({
-        ...base,
-        reuse: filesOnDisk ? current : undefined,
-        previousFiles: current ? current.clips.map((clip) => clip.file) : [],
-      });
     }
   }
 
@@ -229,6 +247,7 @@ export async function runVoice(
   let estCost = 0;
   const perLocale = new Map<string, { entries: number; clips: number; chars: number; voice: string; mode: TimingMode }>();
   for (const task of tasks) {
+    const rowKey = `${task.locale}${task.variant === DEFAULT_VOICE_VARIANT ? "" : ` / ${task.variant}`}`;
     const chars = task.reuse ? 0 : task.sentences.reduce((sum, s) => sum + s.length, 0);
     const sttSeconds =
       task.timingMode === "align"
@@ -239,7 +258,7 @@ export async function runVoice(
     estCost +=
       (chars * pricePerMillionChars(task.voice, config.voice.pricing)) / 1_000_000 +
       (sttSeconds / 60) * config.voice.sttPerMinuteUsd;
-    const row = perLocale.get(task.locale) ?? {
+    const row = perLocale.get(rowKey) ?? {
       entries: 0,
       clips: 0,
       chars: 0,
@@ -249,13 +268,15 @@ export async function runVoice(
     row.entries++;
     row.clips += task.sentences.length;
     row.chars += chars;
-    perLocale.set(task.locale, row);
+    perLocale.set(rowKey, row);
   }
 
   console.log("\nPlanned work:");
-  for (const [locale, row] of perLocale) {
+  const rowWidth = Math.max(...[...perLocale.keys()].map((k) => k.length), 8);
+  for (const [rowKey, row] of perLocale) {
+    const locale = rowKey.split(" / ")[0];
     console.log(
-      `  ${locale.padEnd(8)} ${String(row.entries).padStart(5)} messages / ${String(row.clips).padStart(5)} clips  (${languageLabel(locale)})  — ${row.voice}, ${config.voice.format}, word timing: ${row.mode === "none" ? "off" : row.mode}`,
+      `  ${rowKey.padEnd(rowWidth)} ${String(row.entries).padStart(5)} messages / ${String(row.clips).padStart(5)} clips  (${languageLabel(locale)})  — ${row.voice}, ${config.voice.format}, word timing: ${row.mode === "none" ? "off" : row.mode}`,
     );
   }
   if (skippedMissing.length) {
@@ -303,7 +324,7 @@ export async function runVoice(
       for (let index = 0; index < task.sentences.length; index++) {
         const sentence = task.sentences[index];
         const words = splitWords(sentence, task.locale);
-        const file = clipFile(task.locale, task.hash, index, config.voice.format);
+        const file = clipFile(task.locale, task.hash, task.variant, index, config.voice.format);
 
         let audio: Buffer;
         let durationMs: number;
@@ -339,9 +360,9 @@ export async function runVoice(
             sources.push("marks");
           } else {
             // The voice ignored the marks — align this and the rest instead.
-            if (!totals.downgraded.has(`${task.locale}:marks`)) {
+            if (!totals.downgraded.has(`${task.voice}:marks`)) {
               totals.downgraded.set(
-                `${task.locale}:marks`,
+                `${task.voice}:marks`,
                 `${task.voice} ignores SSML marks — word timing comes from Speech-to-Text alignment instead`,
               );
             }
@@ -378,12 +399,12 @@ export async function runVoice(
     } catch (err) {
       deleteClips(config, cwd, newFiles);
       totals.failed.push({
-        locale: task.locale,
+        locale: `${task.locale}/${task.variant}`,
         hash: task.hash,
         reason: (err as Error).message,
       });
       done++;
-      bar.update(done, `${task.locale}  (failed ${task.hash})`);
+      bar.update(done, `${task.locale}/${task.variant}  (failed ${task.hash})`);
       return;
     }
 
@@ -409,14 +430,14 @@ export async function runVoice(
       clips,
     };
     const vm = voiceManifests.get(task.locale)!;
-    vm.entries[task.hash] = entry;
+    vm.entries[task.hash] = { ...(vm.entries[task.hash] ?? {}), [task.variant]: entry };
     // Persist after every entry — a crash loses nothing done.
     writeVoiceManifest(config, cwd, task.locale, vm);
     totals.generated++;
     done++;
     const preview =
       task.sentences[0].length > 34 ? task.sentences[0].slice(0, 33) + "…" : task.sentences[0];
-    bar.update(done, `${task.locale}  $${totals.costUsd.toFixed(4)}  "${preview}"`);
+    bar.update(done, `${task.locale}/${task.variant}  $${totals.costUsd.toFixed(4)}  "${preview}"`);
   };
 
   const concurrency = Math.max(1, config.voice.concurrency);
@@ -437,7 +458,7 @@ export async function runVoice(
 
   // ---- report --------------------------------------------------------------
   console.log(
-    `\nDone: ${totals.generated}/${tasks.length} messages voiced · ${totals.chars.toLocaleString()} characters` +
+    `\nDone: ${totals.generated}/${tasks.length} message voices generated · ${totals.chars.toLocaleString()} characters` +
       (totals.sttMs > 0 ? ` · ${(totals.sttMs / 60_000).toFixed(1)} min aligned` : "") +
       ` · cost $${totals.costUsd.toFixed(4)}`,
   );
