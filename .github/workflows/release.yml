@@ -1,10 +1,18 @@
 # Release flow: tag main.
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v1.1.0 && git push origin v1.1.0
 #
 # The tag must match package.json's version — the workflow verifies and then
-# publishes to the public npm registry. Requires an `NPM_TOKEN` repository
-# secret (npmjs.com automation token with publish rights on `glotforge`).
+# publishes to the public npm registry through npm Trusted Publishing: the
+# job presents a GitHub OIDC token, npm checks it against the trusted
+# publisher configured on the package (owner CarterL1S41, repo GlotForge,
+# workflow release.yml), and a provenance attestation is attached. No npm
+# token is stored anywhere.
+#
+# Trusted Publishing can only be configured on a package that already exists,
+# so the first version of a package is published once from a terminal
+# (`npm login`, then `npm publish --access public`), after which the
+# trusted publisher is added on npmjs.com under the package's Settings.
 name: Release
 
 on:
@@ -17,12 +25,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Required: lets the job mint the OIDC token npm verifies.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Node 24 ships an npm new enough for Trusted Publishing (11.5.1+).
+          node-version: 24
           cache: npm
           registry-url: https://registry.npmjs.org
 
@@ -41,6 +52,4 @@ jobs:
         run: npm run typecheck
 
       - name: Publish to npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance

@@ -4,6 +4,17 @@ All notable changes to GlotForge. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-10-30
+
+### Changed
+
+- The release workflow publishes through npm Trusted Publishing (GitHub
+  OIDC with `id-token: write`, Node 24, provenance attached) instead of a
+  stored `NPM_TOKEN` secret. README documents the one-time trusted
+  publisher setup on npmjs.com.
+
+No package code changed.
+
 ## [1.0.0] — 2026-10-30
 
 ### Added
@@ -98,5 +109,6 @@ Initial release.
 - CI on `develop` and `main`; release workflow on `v*` tags publishing to
   npm.
 
+[1.0.1]: https://github.com/CarterL1S41/GlotForge/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/CarterL1S41/GlotForge/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/CarterL1S41/GlotForge/releases/tag/v0.1.0

@@ -542,13 +542,16 @@ runs on pushes and PRs to both. To release, merge to `main`, bump `version`
 in package.json, add the entry to [CHANGELOG.md](./CHANGELOG.md), then:
 
 ```
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 The release workflow verifies the tag matches package.json and publishes to
-the public npm registry using the repo's `NPM_TOKEN` secret (an npmjs.com
-automation token).
+the public npm registry through npm Trusted Publishing (GitHub OIDC, no
+stored token, provenance attached). The trusted publisher is configured on
+npmjs.com under the package's Settings: GitHub, owner `CarterL1S41`,
+repository `GlotForge`, workflow `release.yml`. A brand-new package has to
+be published once from a terminal before that setting exists.
 
 ## Development
 
