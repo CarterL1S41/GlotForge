@@ -73,6 +73,10 @@ function resolveVoice(
       `${CONFIG_FILE}: voice.wordTiming must be auto, marks, align or none.`,
     );
   }
+  const clips = raw.clips ?? "sentence";
+  if (clips !== "sentence" && clips !== "message") {
+    throw new Error(`${CONFIG_FILE}: voice.clips must be "sentence" or "message".`);
+  }
   const speakingRate = raw.speakingRate ?? 1;
   if (
     typeof speakingRate !== "number" ||
@@ -108,6 +112,7 @@ function resolveVoice(
     apiKeyEnv: raw.apiKeyEnv ?? "GOOGLE_TTS_KEY",
     format,
     speakingRate,
+    clips,
     audioDir: raw.audioDir ?? "public/audio/i18n",
     wordTiming,
     sttRegion: raw.sttRegion ?? "us-central1",

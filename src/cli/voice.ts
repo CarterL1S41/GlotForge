@@ -192,7 +192,12 @@ export async function runVoice(
           skippedMissing.push({ locale, hash });
           continue;
         }
-        sentences = splitSentences(plainTextOf(nodes), locale);
+        const spoken = plainTextOf(nodes);
+        // One clip per sentence, or the whole message as a single clip.
+        sentences =
+          config.voice.clips === "message"
+            ? [spoken.trim()].filter(Boolean)
+            : splitSentences(spoken, locale);
       } catch {
         skippedMissing.push({ locale, hash });
         continue;

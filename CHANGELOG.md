@@ -4,6 +4,28 @@ All notable changes to GlotForge. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-11-12
+
+### Added
+
+- **Whole-message clips.** `voice.clips` chooses how a message is cut:
+  `"sentence"` (the default, unchanged) makes one clip per sentence;
+  `"message"` synthesizes the whole message as a single clip, so the voice
+  hears each sentence in context and its intonation carries across
+  sentence boundaries. Word timing, highlighting and `seekToWord` work the
+  same either way. Changing the setting regenerates every entry on the
+  next `voice` run.
+- **Player volume.** `useVoicePlayer(ref, { volume })` sets how loud the
+  clips play: `1` is the clip as recorded, `0` is silent, and a value above
+  `1` amplifies it through Web Audio. Amplifying needs clips served from
+  the page's own origin; from another origin the value is held at `1`.
+- **Clips without the player.** `resolveVoice(manifest, ref, options)`
+  looks a message up in an audio catalog and returns its clips with URLs,
+  word offsets and durations: plain data, no React, for a player of your
+  own. `voiceWordAt(clip, ms)` gives the word being spoken at a position in
+  a clip. The `VoiceManifest`, `VoiceEntry` and `VoiceClip` types are
+  exported.
+
 ## [1.1.0] — 2026-10-30
 
 ### Added

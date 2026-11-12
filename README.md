@@ -6,8 +6,8 @@ registry file. Catalogs are keyed by a content hash of the source text (plus
 optional context), a build-time loader bakes the hashes in so the runtime
 never hashes or re-serializes anything, and an AI-powered CLI fills the
 catalogs with glossary and context steering. Mark a message `voice` and the
-same CLI generates spoken audio for it in every language, one clip per
-sentence, with per-word timing for read-along highlighting.
+same CLI generates spoken audio for it in every language, with per-word
+timing for read-along highlighting.
 
 English is the default source language, but any `sourceLocale` works — write
 your copy in the language your team thinks in.
@@ -421,6 +421,7 @@ fine — their words are spoken in place.
   },
   "format": "MP3",
   "speakingRate": 1,
+  "clips": "sentence",
   "audioDir": "public/audio/i18n",
   "wordTiming": "auto"
 }
@@ -437,6 +438,11 @@ fine — their words are spoken in place.
   silent.
 - `format` — `MP3` (default, about a twelfth the bytes of `LINEAR16`) or
   `LINEAR16` (uncompressed WAV).
+- `clips` — how a message is cut into clips. `sentence` (default) makes one
+  clip per sentence, so a changed sentence regenerates alone. `message`
+  makes one clip of the whole message: the voice hears every sentence in
+  context, which keeps its intonation natural from one sentence to the
+  next. Changing it regenerates every entry.
 - `audioDir` — where clips are written, relative to the app root. The
   default lands under Next.js `public/`, served at `/audio/i18n`, which is
   the provider's `audioBaseUrl` default.
@@ -476,11 +482,12 @@ npx glotforge voice --force         # regenerate everything in scope
 ```
 
 Each voiced message becomes one clip per sentence per variant (locale-aware
-sentence splitting, so Japanese and Thai split correctly), named
+sentence splitting, so Japanese and Thai split correctly), or one clip per
+variant with `"clips": "message"`. Clips are named
 `<hash>-<variant>-<n>.mp3` under `<audioDir>/<locale>/`. The audio catalog
-records, per clip, the sentence text, its duration, and the word offsets in
-milliseconds. An entry is regenerated when its voice, format, pace or
-translated text changes; everything else is left alone. Translations must
+records, per clip, its text, its duration, and the word offsets in
+milliseconds. An entry is regenerated when its voice, format, pace, clip
+setting or translated text changes; everything else is left alone. Translations must
 exist first — run `translate` before `voice`. `status` reports audio
 coverage per locale and how many entries are word-timed.
 
@@ -524,6 +531,32 @@ const player = useVoicePlayer("intro");
 the resolved clips (with URLs) for custom players. A ref is a voice key, a
 `msg()` descriptor, or a raw hash. Entries without word timing still report
 the clip index, so sentence-level highlighting always works.
+
+`useVoicePlayer(ref, { rate, volume })` sets the playback speed and the
+loudness. `volume` runs from `0` (silent) through `1` (the clip as
+recorded); above `1` the clip is amplified through Web Audio, which needs
+the clips served from the page's own origin.
+
+**Your own player.** Nothing requires `useVoicePlayer`. `resolveVoice`
+turns an audio catalog and a message into plain data, with no React, and
+`voiceWordAt` tells you which word a playback position falls on:
+
+```ts
+import { resolveVoice, voiceWordAt } from "glotforge";
+import catalog from "../i18n/voice/en-US.json";
+
+const voice = resolveVoice(catalog, "intro", { audioBaseUrl: "/audio/i18n", variant: "female" });
+if (voice) {
+  const clip = voice.clips[0];
+  const audio = new Audio(clip.url);
+  audio.ontimeupdate = () => highlight(voiceWordAt(clip, audio.currentTime * 1000));
+  void audio.play();
+}
+```
+
+Each clip carries its `url`, `text`, `durationMs`, `words` (start and end
+in milliseconds), `wordOffset` (its first word's index in the whole
+message) and `offsetMs` (its start on the message's timeline).
 
 **Letting the user pick a voice.** When a locale configures variants, the
 provider keeps the user's preference:

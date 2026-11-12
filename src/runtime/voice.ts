@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hashMessage } from "../shared/hash";
-import type { VoiceClip, VoiceEntry } from "../shared/types";
+import type { VoiceClip, VoiceEntry, VoiceManifest } from "../shared/types";
 import { useI18n } from "./context";
 
 /**
@@ -47,6 +47,66 @@ export function useVoiceVariants(): string[] {
   return voiceManifest?.variants ?? [];
 }
 
+export interface ResolveVoiceOptions {
+  /** Where the clip files are served from. Default "/audio/i18n". */
+  audioBaseUrl?: string;
+  /** Preferred variant; one the entry lacks falls back to the locale's first. */
+  variant?: string | null;
+}
+
+/**
+ * Look a voiced message up in an audio catalog: its clips with URLs, word
+ * offsets and durations, ready for any player. Plain data in, plain data
+ * out, no React. `useVoice` is this over the provider's catalog. Returns
+ * null when the catalog has no audio for the message.
+ */
+export function resolveVoice(
+  manifest: VoiceManifest | null | undefined,
+  ref: VoiceRef | null | undefined,
+  options: ResolveVoiceOptions = {},
+): ResolvedVoice | null {
+  if (!ref || !manifest) return null;
+  let id: string | undefined;
+  if (typeof ref === "string") {
+    id = manifest.keys[ref] ?? (manifest.entries[ref] ? ref : undefined);
+  } else if (ref.id) {
+    id = ref.id;
+  } else if (ref.message) {
+    id = hashMessage(ref.message, ref.context);
+  }
+  if (!id) return null;
+  const byVariant = manifest.entries[id];
+  if (!byVariant) return null;
+  const available = manifest.variants.filter((name) => byVariant[name]);
+  const wanted = options.variant;
+  const resolvedVariant =
+    wanted && byVariant[wanted] ? wanted : (available[0] ?? Object.keys(byVariant)[0]);
+  if (!resolvedVariant) return null;
+  const entry = byVariant[resolvedVariant];
+  const base = options.audioBaseUrl ?? "/audio/i18n";
+  let wordOffset = 0;
+  let offsetMs = 0;
+  const clips = entry.clips.map((clip) => {
+    const resolved: ResolvedVoiceClip = {
+      ...clip,
+      url: joinUrl(base, clip.file),
+      wordOffset,
+      offsetMs,
+    };
+    wordOffset += clip.words?.length ?? 0;
+    offsetMs += clip.durationMs;
+    return resolved;
+  });
+  return {
+    id,
+    variant: resolvedVariant,
+    entry,
+    clips,
+    wordCount: wordOffset,
+    durationMs: offsetMs,
+  };
+}
+
 /**
  * The generated audio for a message in the active locale, or null while the
  * audio catalog is loading, when the message has no audio, or when the app
@@ -59,46 +119,10 @@ export function useVoice(
 ): ResolvedVoice | null {
   const { voiceManifest, audioBaseUrl, voiceVariant } = useI18n();
   const wanted = variant === undefined ? voiceVariant : variant;
-  return useMemo(() => {
-    if (!ref || !voiceManifest) return null;
-    let id: string | undefined;
-    if (typeof ref === "string") {
-      id = voiceManifest.keys[ref] ?? (voiceManifest.entries[ref] ? ref : undefined);
-    } else if (ref.id) {
-      id = ref.id;
-    } else if (ref.message) {
-      id = hashMessage(ref.message, ref.context);
-    }
-    if (!id) return null;
-    const byVariant = voiceManifest.entries[id];
-    if (!byVariant) return null;
-    const available = voiceManifest.variants.filter((name) => byVariant[name]);
-    const resolvedVariant =
-      wanted && byVariant[wanted] ? wanted : (available[0] ?? Object.keys(byVariant)[0]);
-    if (!resolvedVariant) return null;
-    const entry = byVariant[resolvedVariant];
-    let wordOffset = 0;
-    let offsetMs = 0;
-    const clips = entry.clips.map((clip) => {
-      const resolved: ResolvedVoiceClip = {
-        ...clip,
-        url: joinUrl(audioBaseUrl, clip.file),
-        wordOffset,
-        offsetMs,
-      };
-      wordOffset += clip.words?.length ?? 0;
-      offsetMs += clip.durationMs;
-      return resolved;
-    });
-    return {
-      id,
-      variant: resolvedVariant,
-      entry,
-      clips,
-      wordCount: wordOffset,
-      durationMs: offsetMs,
-    };
-  }, [ref, wanted, voiceManifest, audioBaseUrl]);
+  return useMemo(
+    () => resolveVoice(voiceManifest, ref, { audioBaseUrl, variant: wanted }),
+    [ref, wanted, voiceManifest, audioBaseUrl],
+  );
 }
 
 export type VoicePlayerStatus = "idle" | "playing" | "paused" | "ended";
@@ -108,7 +132,7 @@ export interface VoicePlayer {
   available: boolean;
   voice: ResolvedVoice | null;
   status: VoicePlayerStatus;
-  /** Index of the clip (sentence) being spoken, or null when idle. */
+  /** Index of the clip being spoken, or null when idle. */
   clip: number | null;
   /**
    * Global index of the word being spoken, or null between words, when
@@ -124,7 +148,7 @@ export interface VoicePlayer {
   /** Pause and rewind to the start. */
   stop: () => void;
   toggle: () => void;
-  /** Jump to a clip (sentence) and keep the current play state. */
+  /** Jump to a clip and keep the current play state. */
   seekToClip: (index: number) => void;
   /** Jump to a global word index and keep the current play state. */
   seekToWord: (index: number) => void;
@@ -133,13 +157,24 @@ export interface VoicePlayer {
 export interface VoicePlayerOptions {
   /** Called when the last clip finishes. */
   onEnd?: () => void;
-  /** Playback rate applied to every clip. Default 1. */
+  /** Playback speed applied to every clip. Default 1. */
   rate?: number;
+  /**
+   * Loudness applied to every clip. Default 1, the clip as recorded; 0 is
+   * silent. Above 1 amplifies through Web Audio, which needs clips served
+   * from the page's own origin: elsewhere the value is held at 1.
+   */
+  volume?: number;
   /** Voice variant for this player; default is the provider's preferred one. */
   variant?: string | null;
 }
 
-function wordAt(clip: ResolvedVoiceClip, clipMs: number): number | null {
+/**
+ * The word being spoken at `clipMs` into a clip, as a global index across
+ * the whole message, or null between words and for a clip without word
+ * timing. What `useVoicePlayer` reports as `word`.
+ */
+export function voiceWordAt(clip: ResolvedVoiceClip, clipMs: number): number | null {
   const words = clip.words;
   if (!words || !words.length) return null;
   // Words are monotonic; the last one that has started is the active one,
@@ -170,6 +205,10 @@ export function useVoicePlayer(
   const onEndRef = useRef(options.onEnd);
   onEndRef.current = options.onEnd;
   const rate = options.rate ?? 1;
+  const volume = Math.max(0, options.volume ?? 1);
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+  const boostRef = useRef<{ context: AudioContext; gain: GainNode } | null>(null);
 
   const [status, setStatus] = useState<VoicePlayerStatus>("idle");
   const [clip, setClip] = useState<number | null>(null);
@@ -185,6 +224,44 @@ export function useVoicePlayer(
     return audioRef.current;
   }, []);
 
+  /**
+   * Set the element's loudness. Up to 1 is the element's own volume. Past 1
+   * the element is routed through a gain node, once, on first need; from
+   * then on the gain node carries every value.
+   */
+  const applyVolume = useCallback(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    const wanted = volumeRef.current;
+    let boost = boostRef.current;
+    if (!boost && wanted > 1 && el.src && typeof window.AudioContext === "function") {
+      let sameOrigin = false;
+      try {
+        sameOrigin = new URL(el.src, window.location.href).origin === window.location.origin;
+      } catch {
+        sameOrigin = false;
+      }
+      if (sameOrigin) {
+        try {
+          const context = new window.AudioContext();
+          const gain = context.createGain();
+          context.createMediaElementSource(el).connect(gain).connect(context.destination);
+          boost = boostRef.current = { context, gain };
+        } catch {
+          boost = null;
+        }
+      }
+    }
+    if (boost) {
+      el.volume = 1;
+      boost.gain.gain.value = wanted;
+      // A context made before the first tap starts suspended.
+      if (boost.context.state === "suspended") void boost.context.resume().catch(() => undefined);
+    } else {
+      el.volume = Math.min(1, wanted);
+    }
+  }, []);
+
   const stopSampling = useCallback(() => {
     if (frameRef.current !== null && typeof window !== "undefined") {
       window.cancelAnimationFrame(frameRef.current);
@@ -198,7 +275,7 @@ export function useVoicePlayer(
     if (!el || !current) return;
     const clipMs = el.currentTime * 1000;
     setCurrentMs(current.offsetMs + clipMs);
-    setWord(wordAt(current, clipMs));
+    setWord(voiceWordAt(current, clipMs));
     if (!el.paused && !el.ended) {
       frameRef.current = window.requestAnimationFrame(sample);
     }
@@ -227,6 +304,7 @@ export function useVoicePlayer(
         el.currentTime = 0;
       }
       el.playbackRate = rate;
+      applyVolume();
       if (autoplay) {
         const attempt = el.play();
         if (attempt && typeof attempt.catch === "function") {
@@ -239,7 +317,7 @@ export function useVoicePlayer(
         }
       }
     },
-    [audio, voice, rate, stopSampling],
+    [audio, voice, rate, stopSampling, applyVolume],
   );
 
   // Wire the element's events once; handlers read the latest voice via refs.
@@ -302,6 +380,10 @@ export function useVoicePlayer(
     if (audioRef.current) audioRef.current.playbackRate = rate;
   }, [rate]);
 
+  useEffect(() => {
+    applyVolume();
+  }, [volume, applyVolume]);
+
   // Release the element on unmount.
   useEffect(() => {
     return () => {
@@ -313,6 +395,9 @@ export function useVoicePlayer(
         el.load();
       }
       audioRef.current = null;
+      const boost = boostRef.current;
+      boostRef.current = null;
+      if (boost) void boost.context.close().catch(() => undefined);
     };
   }, [stopSampling]);
 
@@ -320,12 +405,13 @@ export function useVoicePlayer(
     const el = audio();
     if (!el || !voice || !voice.clips.length) return;
     if (status === "paused" && el.src) {
+      applyVolume();
       const attempt = el.play();
       if (attempt && typeof attempt.catch === "function") attempt.catch(() => undefined);
       return;
     }
     loadClip(0, true);
-  }, [audio, voice, status, loadClip]);
+  }, [audio, voice, status, loadClip, applyVolume]);
 
   const pause = useCallback(() => {
     audioRef.current?.pause();

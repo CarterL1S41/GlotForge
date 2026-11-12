@@ -200,6 +200,16 @@ export interface I18nConfig {
     /** Speaking pace, 0.25–2.0. Default 1. */
     speakingRate?: number;
     /**
+     * How a message is cut into clips. Default "sentence":
+     *   sentence — one clip per sentence. Each sentence is synthesized on
+     *              its own, so a changed sentence regenerates alone.
+     *   message  — one clip for the whole message. The voice hears every
+     *              sentence in context, which keeps its intonation natural
+     *              across sentence boundaries.
+     * Changing it regenerates every entry on the next `voice` run.
+     */
+    clips?: "sentence" | "message";
+    /**
      * Directory the clip files are written to, relative to the app root.
      * Default "public/audio/i18n" so a Next.js app serves them at
      * /audio/i18n — the provider's `audioBaseUrl` default.
