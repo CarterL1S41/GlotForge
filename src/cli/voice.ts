@@ -6,18 +6,22 @@ import { plainTextOf, splitSentences, splitWords, unspeakableReason } from "../s
 import {
   DEFAULT_VOICE_VARIANT,
   type ResolvedConfig,
+  type ResolvedVoice,
   type VoiceClip,
   type VoiceEntry,
   type VoiceManifest,
   type VoiceTiming,
 } from "../shared/types";
 import { alignWords, wordsFromMarks } from "./align";
-import { audioDurationMs } from "./audio";
+import { audioDurationMs, mp3FromPcm, readPcm, wavFromPcm } from "./audio";
 import { readCatalog, readManifest } from "./catalog";
 import {
+  CHARS_PER_TOKEN,
   GoogleApiError,
   familyHonoursMarks,
+  generateSpeech,
   pricePerMillionChars,
+  pricePerMillionTokens,
   recognizeWords,
   resolveCredentials,
   synthesize,
@@ -53,7 +57,8 @@ interface EntryTask {
   hash: string;
   key?: string;
   sentences: string[];
-  voice: string;
+  /** The voice with its model, style and API. */
+  spec: ResolvedVoice;
   timingMode: TimingMode;
   /** Current entry whose audio can be kept — only the timing is stale. */
   reuse?: VoiceEntry;
@@ -84,17 +89,47 @@ function confirm(question: string): Promise<boolean> {
 /** Speech runs about fifteen characters a second — good enough for an estimate. */
 const CHARS_PER_SECOND = 15;
 
-function timingModeFor(config: ResolvedConfig, voice: string): TimingMode {
+function timingModeFor(config: ResolvedConfig, spec: ResolvedVoice): TimingMode {
+  if (config.voice.wordTiming === "none") return "none";
+  // A speech model takes plain text and a style, never SSML, so marks are
+  // not an option for it whatever the setting says.
+  if (spec.model) return "align";
   switch (config.voice.wordTiming) {
-    case "none":
-      return "none";
     case "marks":
       return "marks";
     case "align":
       return "align";
     default:
-      return familyHonoursMarks(voice) ? "marks" : "align";
+      return familyHonoursMarks(spec.voice) ? "marks" : "align";
   }
+}
+
+/** How a voice reads in the plan and in notes: its name, with its model when it has one. */
+function voiceLabel(spec: ResolvedVoice): string {
+  return spec.model ? `${spec.voice} (${spec.model})` : spec.voice;
+}
+
+/**
+ * What synthesizing text costs. A voice family is priced by the
+ * character; a speech model by the token, from the counts the API
+ * reported when it gave them, otherwise from the text and the seconds of
+ * speech. A model with no known price costs nothing here.
+ */
+function synthesisCost(
+  config: ResolvedConfig,
+  spec: ResolvedVoice,
+  chars: number,
+  seconds: number,
+  tokens?: { input: number; output: number },
+): number {
+  if (!spec.model) {
+    return (chars * pricePerMillionChars(spec.voice, config.voice.pricing)) / 1_000_000;
+  }
+  const price = pricePerMillionTokens(spec.model, config.voice.tokenPricing);
+  if (!price) return 0;
+  const input = tokens?.input ?? (chars + spec.style.length) / CHARS_PER_TOKEN;
+  const output = tokens?.output ?? seconds * config.voice.audioTokensPerSecond;
+  return (input * price.input + output * price.output) / 1_000_000;
 }
 
 function entryIsCurrent(
@@ -104,7 +139,9 @@ function entryIsCurrent(
 ): "current" | "stale" | "timing-only" {
   if (!entry) return "stale";
   if (
-    entry.voice !== task.voice ||
+    entry.voice !== task.spec.voice ||
+    (entry.model ?? "") !== task.spec.model ||
+    (entry.style ?? "") !== task.spec.style ||
     entry.format !== config.voice.format ||
     entry.speakingRate !== config.voice.speakingRate ||
     entry.clips.length !== task.sentences.length ||
@@ -126,7 +163,7 @@ export async function runVoice(
   const configuredLocales = voicedLocales(config);
   if (!configuredLocales.length) {
     throw new Error(
-      'no voices configured — add "voice": { "voices": { "en-US": "en-US-Chirp3-HD-Aoede", ... } } to i18n.config.json',
+      'no voices configured — add "voice": { "voices": { "en-US": "en-US-Chirp3-HD-Aoede", ... } } to i18n.config.json, or a "model" with its speaker names',
     );
   }
   const targetLocales = options.locales?.length ? options.locales : configuredLocales;
@@ -203,15 +240,15 @@ export async function runVoice(
         continue;
       }
       if (!sentences.length) continue;
-      for (const [variant, voice] of Object.entries(variants)) {
-        const timingMode = timingModeFor(config, voice);
+      for (const [variant, spec] of Object.entries(variants)) {
+        const timingMode = timingModeFor(config, spec);
         const base = {
           locale,
           variant,
           hash,
           key: typeof entry.voice === "string" ? entry.voice : undefined,
           sentences,
-          voice,
+          spec,
           timingMode,
         };
         const current = next.entries[hash]?.[variant];
@@ -250,6 +287,8 @@ export async function runVoice(
   let estChars = 0;
   let estSttSeconds = 0;
   let estCost = 0;
+  let estFamilyChars = 0;
+  const unpriced = new Set<string>();
   const perLocale = new Map<string, { entries: number; clips: number; chars: number; voice: string; mode: TimingMode }>();
   for (const task of tasks) {
     const rowKey = `${task.locale}${task.variant === DEFAULT_VOICE_VARIANT ? "" : ` / ${task.variant}`}`;
@@ -260,14 +299,24 @@ export async function runVoice(
         : 0;
     estChars += chars;
     estSttSeconds += sttSeconds;
+    if (!task.spec.model) estFamilyChars += chars;
+    else if (chars > 0 && !pricePerMillionTokens(task.spec.model, config.voice.tokenPricing)) {
+      unpriced.add(task.spec.model);
+    }
     estCost +=
-      (chars * pricePerMillionChars(task.voice, config.voice.pricing)) / 1_000_000 +
+      // The style travels with every clip, so it is counted once per clip.
+      (task.reuse
+        ? 0
+        : task.sentences.reduce(
+            (sum, s) => sum + synthesisCost(config, task.spec, s.length, s.length / CHARS_PER_SECOND),
+            0,
+          )) +
       (sttSeconds / 60) * config.voice.sttPerMinuteUsd;
     const row = perLocale.get(rowKey) ?? {
       entries: 0,
       clips: 0,
       chars: 0,
-      voice: task.voice,
+      voice: voiceLabel(task.spec),
       mode: task.timingMode,
     };
     row.entries++;
@@ -293,8 +342,13 @@ export async function runVoice(
     `\nEstimate: ${estChars.toLocaleString()} characters synthesized` +
       (estSttSeconds > 0 ? ` + ~${Math.ceil(estSttSeconds / 60)} min aligned` : "") +
       ` ≈ $${estCost.toFixed(4)}` +
-      (estChars > 0 ? " (Google's monthly free tier may cover it)" : ""),
+      (estFamilyChars > 0 ? " (Google's monthly free tier may cover it)" : ""),
   );
+  for (const model of unpriced) {
+    console.log(
+      `  ${model} has no price on file, so its speech is not in the estimate — add it to voice.tokenPricing.`,
+    );
+  }
 
   if (options.dryRun) return;
   if (!options.yes) {
@@ -323,7 +377,13 @@ export async function runVoice(
     const newFiles: string[] = [];
     const sources: ("marks" | "align")[] = [];
     let localeMode: TimingMode = task.timingMode;
-    const price = pricePerMillionChars(task.voice, config.voice.pricing);
+    const { spec } = task;
+    if (spec.api === "generate-content" && config.voice.speakingRate !== 1) {
+      totals.downgraded.set(
+        `${spec.model}:rate`,
+        `${spec.model} takes no speaking rate, so voice.speakingRate was not applied — set the pace in voice.style`,
+      );
+    }
 
     try {
       for (let index = 0; index < task.sentences.length; index++) {
@@ -339,19 +399,40 @@ export async function runVoice(
           audio = fs.readFileSync(path.join(audioDir(config, cwd), file));
           durationMs = reused.durationMs;
         } else {
-          const result = await synthesize(creds, {
-            text: sentence,
-            markWords: localeMode === "marks" ? words : undefined,
-            locale: task.locale,
-            voice: task.voice,
-            format: config.voice.format,
-            speakingRate: config.voice.speakingRate,
-          });
-          audio = result.audio;
-          timepoints = result.timepoints;
-          totals.chars += sentence.length;
-          totals.costUsd += (sentence.length * price) / 1_000_000;
+          let tokens: { input: number; output: number } | undefined;
+          if (spec.api === "generate-content") {
+            // The model returns uncompressed audio: keep it as WAV, or
+            // encode it when the clips are MP3.
+            const spoken = await generateSpeech(creds, config, {
+              text: sentence,
+              voice: spec.voice,
+              model: spec.model,
+              style: spec.style,
+            });
+            const pcm = readPcm(spoken.audio, spoken.mimeType);
+            audio =
+              config.voice.format === "MP3"
+                ? await mp3FromPcm(pcm, config.voice.mp3Bitrate)
+                : wavFromPcm(pcm);
+            tokens = spoken.tokens;
+          } else {
+            const result = await synthesize(creds, {
+              text: sentence,
+              markWords: localeMode === "marks" ? words : undefined,
+              locale: task.locale,
+              voice: spec.voice,
+              model: spec.model,
+              style: spec.style,
+              format: config.voice.format,
+              speakingRate: config.voice.speakingRate,
+            });
+            audio = result.audio;
+            timepoints = result.timepoints;
+            tokens = result.tokens;
+          }
           durationMs = audioDurationMs(audio, config.voice.format);
+          totals.chars += sentence.length;
+          totals.costUsd += synthesisCost(config, spec, sentence.length, durationMs / 1000, tokens);
           writeClip(config, cwd, file, audio);
           newFiles.push(file);
         }
@@ -365,10 +446,10 @@ export async function runVoice(
             sources.push("marks");
           } else {
             // The voice ignored the marks — align this and the rest instead.
-            if (!totals.downgraded.has(`${task.voice}:marks`)) {
+            if (!totals.downgraded.has(`${spec.voice}:marks`)) {
               totals.downgraded.set(
-                `${task.voice}:marks`,
-                `${task.voice} ignores SSML marks — word timing comes from Speech-to-Text alignment instead`,
+                `${spec.voice}:marks`,
+                `${spec.voice} ignores SSML marks — word timing comes from Speech-to-Text alignment instead`,
               );
             }
             localeMode = "align";
@@ -428,7 +509,9 @@ export async function runVoice(
         : "marks"
       : "sentence";
     const entry: VoiceEntry = {
-      voice: task.voice,
+      voice: spec.voice,
+      ...(spec.model ? { model: spec.model } : {}),
+      ...(spec.style ? { style: spec.style } : {}),
       format: config.voice.format,
       speakingRate: config.voice.speakingRate,
       timing,

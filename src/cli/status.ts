@@ -60,7 +60,7 @@ export function computeStatus(config: ResolvedConfig, cwd: string): StatusSummar
         locale,
         variant,
         language: displayNames?.of(locale) ?? locale,
-        voice: voiceName,
+        voice: voiceName.model ? `${voiceName.voice} (${voiceName.model})` : voiceName.voice,
         generated,
         wordTimed,
         missing: voicedHashes.length - generated,

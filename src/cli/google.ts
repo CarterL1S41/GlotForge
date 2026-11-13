@@ -1,6 +1,7 @@
 /**
- * Google Cloud client for the voice command: Text-to-Speech synthesis and
- * Speech-to-Text V2 recognition over REST, with no SDK dependency.
+ * Google Cloud client for the voice command: Text-to-Speech synthesis,
+ * speech models through generateContent, and Speech-to-Text V2
+ * recognition, all over REST with no SDK dependency.
  *
  * Auth, in order:
  *   1. A service-account key (env var named by voice.credentialsEnv, default
@@ -11,7 +12,7 @@
 
 import crypto from "crypto";
 import fs from "fs";
-import type { ResolvedConfig } from "../shared/types";
+import type { ResolvedConfig, VoiceTokenPrice } from "../shared/types";
 
 interface ServiceAccount {
   client_email: string;
@@ -200,6 +201,10 @@ export interface SynthesisRequest {
   markWords?: { text: string; start: number; end: number }[];
   locale: string;
   voice: string;
+  /** Speech model, when the voice is a model's speaker; "" for a voice family. */
+  model: string;
+  /** Style direction for a speech model; "" for none. */
+  style: string;
   format: "MP3" | "LINEAR16";
   speakingRate: number;
 }
@@ -208,6 +213,8 @@ export interface SynthesisResult {
   audio: Buffer;
   /** Mark index -> seconds from the start, when marks were honoured. */
   timepoints: Map<number, number> | null;
+  /** Token counts, when the API bills by token and reports them. */
+  tokens?: { input: number; output: number };
 }
 
 function escapeSsml(text: string): string {
@@ -245,8 +252,12 @@ export async function synthesize(
   const body: Record<string, unknown> = {
     input: useMarks
       ? { ssml: markedSsml(req.text, req.markWords!) }
-      : { text: req.text },
-    voice: { languageCode: req.locale, name: req.voice },
+      : { text: req.text, ...(req.model && req.style ? { prompt: req.style } : {}) },
+    voice: {
+      languageCode: req.locale,
+      name: req.voice,
+      ...(req.model ? { modelName: req.model } : {}),
+    },
     audioConfig: {
       audioEncoding: req.format,
       ...(req.speakingRate !== 1 ? { speakingRate: req.speakingRate } : {}),
@@ -268,6 +279,76 @@ export async function synthesize(
     if (timepoints.size === 0) timepoints = null;
   }
   return { audio, timepoints };
+}
+
+/* --------------------------- speech models ------------------------------- */
+
+/** Host for generateContent: the configured one, the global one, or the location's own. */
+export function generateContentHost(config: ResolvedConfig): string {
+  if (config.voice.endpoint) return config.voice.endpoint;
+  const location = config.voice.location;
+  return location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+}
+
+interface GenerateContentResponse {
+  candidates?: {
+    finishReason?: string;
+    content?: { parts?: { inlineData?: { mimeType?: string; data?: string } }[] };
+  }[];
+  promptFeedback?: { blockReason?: string };
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+}
+
+/**
+ * Speech from a model served through generateContent. The model detects
+ * the language of the text; voice and style are the only direction it
+ * takes, and it returns uncompressed audio (WAV, or raw PCM named by its
+ * MIME type), which the caller stores or encodes.
+ */
+export async function generateSpeech(
+  creds: Credentials,
+  config: ResolvedConfig,
+  req: { text: string; voice: string; model: string; style: string },
+): Promise<{ audio: Buffer; mimeType: string; tokens?: { input: number; output: number } }> {
+  const url =
+    `https://${generateContentHost(config)}/v1/projects/${encodeURIComponent(creds.project)}` +
+    `/locations/${encodeURIComponent(config.voice.location)}/publishers/google/models/${encodeURIComponent(req.model)}:generateContent`;
+  const body = {
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: req.text, ...(req.style ? { speechMetadata: { style: req.style } } : {}) }],
+      },
+    ],
+    generationConfig: {
+      responseModalities: ["AUDIO"],
+      speechConfig: { voiceConfig: { voice: req.voice } },
+    },
+  };
+  // A speech model now and then answers without audio; the same request
+  // usually succeeds when asked again.
+  let lastReason = "no audio in the response";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const data = await postJson<GenerateContentResponse>(creds, url, body);
+    if (data.promptFeedback?.blockReason) {
+      throw new Error(`the speech model refused the text (${data.promptFeedback.blockReason})`);
+    }
+    const candidate = data.candidates?.[0];
+    const part = candidate?.content?.parts?.find((p) => p.inlineData?.data);
+    if (part?.inlineData?.data) {
+      const usage = data.usageMetadata;
+      return {
+        audio: Buffer.from(part.inlineData.data, "base64"),
+        mimeType: part.inlineData.mimeType ?? "",
+        tokens:
+          usage && (usage.promptTokenCount !== undefined || usage.candidatesTokenCount !== undefined)
+            ? { input: usage.promptTokenCount ?? 0, output: usage.candidatesTokenCount ?? 0 }
+            : undefined,
+      };
+    }
+    if (candidate?.finishReason) lastReason = `no audio in the response (${candidate.finishReason})`;
+  }
+  throw new Error(`${req.model}: ${lastReason}`);
 }
 
 /* ----------------------------- recognition ------------------------------- */
@@ -353,6 +434,44 @@ export function pricePerMillionChars(
   }
   return 30;
 }
+
+/**
+ * List prices of speech models, USD per million tokens, by model-name
+ * fragment; the more specific name comes first. Some carry an
+ * introductory price with the date it ends.
+ */
+const MODEL_PRICING: [string, VoiceTokenPrice, { until: string; price: VoiceTokenPrice }?][] = [
+  [
+    "gemini-3.8-flash-lite-tts",
+    { input: 1, output: 12 },
+    { until: "2027-01-01", price: { input: 0.5, output: 6 } },
+  ],
+  [
+    "gemini-3.8-flash-tts",
+    { input: 1, output: 18 },
+    { until: "2027-01-01", price: { input: 0.5, output: 9 } },
+  ],
+];
+
+/** The price of a speech model, or null when none is known or configured. */
+export function pricePerMillionTokens(
+  model: string,
+  configured: Record<string, VoiceTokenPrice>,
+  now = new Date(),
+): VoiceTokenPrice | null {
+  const lower = model.toLowerCase();
+  for (const [fragment, price] of Object.entries(configured)) {
+    if (lower.includes(fragment.toLowerCase())) return price;
+  }
+  for (const [fragment, price, intro] of MODEL_PRICING) {
+    if (!lower.includes(fragment)) continue;
+    return intro && now < new Date(`${intro.until}T00:00:00Z`) ? intro.price : price;
+  }
+  return null;
+}
+
+/** About four characters of text make one token; good enough for an estimate. */
+export const CHARS_PER_TOKEN = 4;
 
 /** Families documented to honour SSML <mark> timepoints. */
 export function familyHonoursMarks(voice: string): boolean {

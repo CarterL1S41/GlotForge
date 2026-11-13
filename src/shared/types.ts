@@ -47,6 +47,10 @@ export type VoiceTiming = "marks" | "align" | "sentence";
 export interface VoiceEntry {
   /** Google voice name the clips were synthesized with. */
   voice: string;
+  /** Speech model the clips were generated with, when the voice names one. */
+  model?: string;
+  /** Style direction the clips were generated with, when one was given. */
+  style?: string;
   format: "MP3" | "LINEAR16";
   speakingRate: number;
   timing: VoiceTiming;
@@ -69,6 +73,46 @@ export interface VoiceManifest {
 
 /** Variant name used when a locale configures a single voice as a plain string. */
 export const DEFAULT_VOICE_VARIANT = "default";
+
+/**
+ * Which Google API speaks a voice:
+ *   text-to-speech   — Cloud Text-to-Speech (`text:synthesize`): Chirp 3 HD,
+ *                      Neural2, WaveNet, Standard, and the speech models that
+ *                      API serves by `modelName`.
+ *   generate-content — the generative model API (`generateContent`), for
+ *                      speech models that are only served there.
+ */
+export type VoiceApi = "text-to-speech" | "generate-content";
+
+/** A voice with its own model, style or API, where a plain voice name is not enough. */
+export interface VoiceSpec {
+  /** Voice name: "en-US-Chirp3-HD-Aoede" for a voice family, "Kore" for a speech model. */
+  voice: string;
+  /** Speech model for this voice. Overrides `voice.model`; "" uses none. */
+  model?: string;
+  /** Style direction for this voice. Overrides `voice.styles` and `voice.style`. */
+  style?: string;
+  /** API for this voice. Overrides `voice.api`. */
+  api?: VoiceApi;
+}
+
+/** A configured voice with every default applied. */
+export interface ResolvedVoice {
+  voice: string;
+  /** "" when the voice name alone selects the voice. */
+  model: string;
+  /** "" when no style direction applies. */
+  style: string;
+  api: VoiceApi;
+}
+
+/** Price of a speech model, USD per million tokens. */
+export interface VoiceTokenPrice {
+  /** Text sent to the model. */
+  input: number;
+  /** Audio it returns. */
+  output: number;
+}
 
 /** i18n.config.json — lives at the consuming app's repo root. */
 export interface I18nConfig {
@@ -164,9 +208,10 @@ export interface I18nConfig {
   };
   /**
    * Spoken audio for messages marked with `voice` (<Trans voice="intro">,
-   * t("...", { voice: "intro" })). Google Cloud Text-to-Speech is the
-   * synthesizer; word timing comes from SSML marks where the voice family
-   * honours them, otherwise from Speech-to-Text alignment.
+   * t("...", { voice: "intro" })). Google Cloud speaks them: a voice family
+   * of Cloud Text-to-Speech, or a speech model when `model` is set. Word
+   * timing comes from SSML marks where the voice family honours them,
+   * otherwise from Speech-to-Text alignment.
    */
   voice?: {
     /**
@@ -179,8 +224,59 @@ export interface I18nConfig {
      *   }
      * The name selects the family (Chirp3-HD, Neural2, Wavenet, Standard).
      * A locale without an entry gets no audio.
+     *
+     * With a speech model (`model` below) the voice is the model's speaker
+     * name, and a variant can be an object when it needs its own model,
+     * style or API:
+     *   "voices": {
+     *     "en-US": { "female": "Kore", "male": "Charon" },
+     *     "pt-PT": { "female": { "voice": "Kore", "style": "European Portuguese." } },
+     *     "de-DE": { "female": { "voice": "de-DE-Neural2-F", "model": "" } }
+     *   }
      */
-    voices?: Record<string, string | Record<string, string>>;
+    voices?: Record<string, string | Record<string, string | VoiceSpec>>;
+    /**
+     * Speech model for every voice, e.g. "gemini-3.8-flash-tts". Omit to
+     * use the voice families of Cloud Text-to-Speech, where the voice name
+     * alone selects the voice. A variant's own `model` overrides it.
+     */
+    model?: string;
+    /**
+     * API that serves the voices. Default: "generate-content" when a model
+     * is set, "text-to-speech" otherwise. Set "text-to-speech" with a model
+     * for speech models that Cloud Text-to-Speech serves by `modelName`.
+     */
+    api?: VoiceApi;
+    /**
+     * Style direction for speech models, in plain words: tone, pace,
+     * accent, delivery ("Warm, unhurried narrator."). Ignored by voice
+     * families, which take no direction. Changing it regenerates the
+     * entries it applies to.
+     */
+    style?: string;
+    /**
+     * Style direction per locale, replacing `style` for that locale. A
+     * speech model that detects the language of the text takes accent and
+     * dialect here: { "pt-PT": "European Portuguese, as spoken in Portugal." }
+     */
+    styles?: Record<string, string>;
+    /**
+     * Location for "generate-content" requests. Default "global". A
+     * regional location is called on its regional host.
+     */
+    location?: string;
+    /**
+     * Host for "generate-content" requests, when the default for the
+     * location is not the one to call (a multi-region or private
+     * endpoint). Host only, no scheme or path.
+     */
+    endpoint?: string;
+    /**
+     * Bitrate in kbps for MP3 clips GlotForge encodes itself, which it
+     * does when a speech model returns only uncompressed audio. One of 32,
+     * 48, 64, 80, 96, 112, 128, 160. Default 64.
+     */
+    mp3Bitrate?: number;
     /**
      * Google Cloud project id. Required with an API key; read from the
      * service-account file when credentials are used. Also honoured from
@@ -236,6 +332,20 @@ export interface I18nConfig {
      * prices cover the Google families; override or extend here.
      */
     pricing?: Record<string, number>;
+    /**
+     * Pricing for speech models, USD per million tokens, keyed by a
+     * model-name fragment:
+     *   { "gemini-3.8-flash-tts": { "input": 1, "output": 18 } }
+     * Built-in list prices cover the models GlotForge knows; override or
+     * extend here. A model with no price is estimated at $0 and says so.
+     */
+    tokenPricing?: Record<string, VoiceTokenPrice>;
+    /**
+     * Audio tokens a speech model bills per second of speech, for the
+     * estimate before a run. Default 25. The cost reported after a run
+     * uses the token counts the API returns.
+     */
+    audioTokensPerSecond?: number;
     /** Speech-to-Text price for the estimate, USD per minute of audio. Default 0.016. */
     sttPerMinuteUsd?: number;
     /** Concurrent in-flight requests. Default 3. */
@@ -247,7 +357,7 @@ export interface ResolvedConfig
   extends Required<Omit<I18nConfig, "translation" | "voice">> {
   translation: Required<NonNullable<I18nConfig["translation"]>>;
   voice: Omit<Required<NonNullable<I18nConfig["voice"]>>, "voices"> & {
-    /** Normalized: locale -> variant name -> Google voice name, config order kept. */
-    voices: Record<string, Record<string, string>>;
+    /** Normalized: locale -> variant name -> voice with its model, style and API, config order kept. */
+    voices: Record<string, Record<string, ResolvedVoice>>;
   };
 }

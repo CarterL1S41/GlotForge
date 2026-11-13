@@ -427,7 +427,7 @@ fine — their words are spoken in place.
 }
 ```
 
-- `voices` — Google Cloud Text-to-Speech voices per locale, the source
+- `voices` — Google Cloud voices per locale, the source
   locale included. A string is one voice; a map is a set of named
   **variants** the user can choose between (names are yours: `female` /
   `male`, `narrator` / `child`), the first being the default. Each variant
@@ -456,6 +456,57 @@ fine — their words are spoken in place.
   `sttRegion` (default `us-central1`) and `sttModel` tune alignment.
 - `project`, `credentialsEnv`, `apiKeyEnv` — see credentials below.
 
+### Speech models
+
+Set `model` and the voices are spoken by a generative speech model in
+place of a voice family:
+
+```json
+"voice": {
+  "model": "gemini-3.8-flash-tts",
+  "style": "A warm, clear narrator. Unhurried.",
+  "styles": {
+    "pt-PT": "A warm, clear narrator. European Portuguese, as spoken in Portugal."
+  },
+  "voices": {
+    "en-US": { "female": "Kore", "male": "Charon" },
+    "pt-PT": { "female": "Kore", "male": "Charon" },
+    "yo-NG": { "female": { "voice": "Kore", "style": "Slow and clear." } },
+    "de-DE": { "female": { "voice": "de-DE-Neural2-F", "model": "" } }
+  }
+}
+```
+
+- `model` — the speech model for every voice. A voice is then the model's
+  speaker name (`Kore`), not a family voice name. Leave it out and nothing
+  changes: voice names select a family as before.
+- `style` — direction in plain words: tone, pace, accent, delivery. It is
+  sent with every clip, and changing it regenerates the entries it applies
+  to. Voice families take no direction and ignore it.
+- `styles` — a style per locale, replacing `style` for that locale. A
+  model that detects the language from the text has no language setting,
+  so accent and dialect go here.
+- A variant can be an object, `{ "voice", "model", "style", "api" }`, when
+  one voice needs its own settings. `"model": ""` puts that voice back on
+  a voice family, so one config can mix both.
+- `api` — which Google API serves the voices. `generate-content` is the
+  default when a model is set; `text-to-speech` sends the model through
+  Cloud Text-to-Speech as `modelName`, for the speech models that API
+  serves. Without a model it is always `text-to-speech`.
+- `location` (default `global`) and `endpoint` — where `generate-content`
+  requests go. A regional location is called on its regional host;
+  `endpoint` names a host outright.
+- `mp3Bitrate` — a `generate-content` model returns uncompressed audio.
+  With `format: "MP3"` GlotForge encodes each clip itself at this bitrate
+  in kbps (default `64`; 32, 48, 64, 80, 96, 112, 128 or 160). With
+  `format: "LINEAR16"` the clips stay WAV and nothing is encoded.
+
+A speech model takes plain text, so word timing always comes from
+Speech-to-Text alignment, and `speakingRate` is not applied through
+`generate-content`: set the pace in `style`. Angle-bracket cues the model
+understands, such as `<short pause>`, cannot be written in a message,
+because `<` opens an inline tag there.
+
 ### Credentials
 
 `glotforge voice` authenticates with a service account or an API key, in
@@ -471,6 +522,15 @@ timing is aligned. Pricing for the estimate is built in per family (Chirp 3
 HD $30 per million characters, Neural2 $16, WaveNet and Standard $4;
 alignment about $0.016 per minute); override with `voice.pricing` and
 `voice.sttPerMinuteUsd`.
+
+A `generate-content` speech model is called on the Vertex AI API, which
+must be enabled for the project, and is billed by the token. The estimate
+uses list prices per million tokens for the models GlotForge knows; set or
+override them with `voice.tokenPricing`
+(`{ "gemini-3.8-flash-tts": { "input": 1, "output": 18 } }`). Before a run
+the audio is estimated at `voice.audioTokensPerSecond` tokens per second
+of speech (default 25); the cost reported afterwards uses the token counts
+the API returns.
 
 ### Running it
 

@@ -62,4 +62,7 @@ export type {
   VoiceClip,
   VoiceWord,
   VoiceTiming,
+  VoiceApi,
+  VoiceSpec,
+  VoiceTokenPrice,
 } from "./shared/types";

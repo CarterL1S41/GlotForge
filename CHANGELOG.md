@@ -4,6 +4,44 @@ All notable changes to GlotForge. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-11-13
+
+### Added
+
+- **Speech models.** `voice.model` names a generative speech model
+  (for example `gemini-3.8-flash-tts`) to speak the voices in place of a
+  Cloud Text-to-Speech voice family; a voice is then the model's speaker
+  name. Without `model` nothing changes. The model is called through
+  `generateContent`; `voice.api: "text-to-speech"` sends it through Cloud
+  Text-to-Speech as `modelName` for the speech models that API serves.
+  `voice.location` and `voice.endpoint` choose where `generateContent`
+  requests go.
+- **Style direction.** `voice.style` gives a speech model its tone, pace,
+  accent and delivery in plain words. `voice.styles` sets it per locale,
+  which is where accent and dialect go for a model that detects the
+  language from the text. A variant written as an object
+  (`{ "voice", "model", "style", "api" }`) carries its own settings, so one
+  config can mix speech models and voice families.
+- **MP3 from uncompressed audio.** A model that returns only WAV or raw
+  PCM still produces MP3 clips: with `format: "MP3"` GlotForge encodes each
+  clip itself at `voice.mp3Bitrate` kbps (default 64). `format:
+  "LINEAR16"` keeps the clips as WAV. The encoder is the
+  `wasm-media-encoders` package, loaded on first use.
+- **Token pricing.** Speech models are estimated and costed per million
+  tokens: list prices are built in for the models GlotForge knows,
+  `voice.tokenPricing` sets or overrides them, and
+  `voice.audioTokensPerSecond` sizes the audio for the estimate. The cost
+  reported after a run uses the token counts the API returns. A model with
+  no price is left out of the estimate and named.
+
+### Changed
+
+- An audio catalog entry records the `model` and `style` it was generated
+  with, and changing either regenerates the entry. Entries from earlier
+  versions carry neither and stay current for voice families.
+- `status` and the `voice` plan show a model voice as `Kore
+  (gemini-3.8-flash-tts)`.
+
 ## [1.2.0] — 2026-11-12
 
 ### Added
