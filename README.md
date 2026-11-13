@@ -600,6 +600,13 @@ CDN in front of it, or a route in your own server that checks the
 request and streams the object, which keeps the bucket private. With
 fingerprinted names that route can answer with a long `Cache-Control`.
 
+When that address is on another origin than the page, give the provider
+`audioCrossOrigin="anonymous"` (or `"use-credentials"` when the host
+needs the user's cookies) and have the host answer with CORS headers.
+The player then requests the clips as CORS media, which is what lets a
+`volume` above `1` amplify them. Without it the clips still play, at a
+volume held to `1`.
+
 ### Playing it
 
 The provider loads the audio catalog for the active locale (the source

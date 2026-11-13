@@ -66,6 +66,15 @@ export interface I18nProviderProps {
    * the CLI's voice.audioDir. Default "/audio/i18n".
    */
   audioBaseUrl?: string;
+  /**
+   * Set when the clips come from another origin that answers with CORS
+   * headers (a bucket, a CDN, an API on its own host). The player then
+   * requests them as CORS media, which is what lets a `volume` above 1
+   * amplify them. "use-credentials" also sends cookies. Leave it unset
+   * for clips on the page's own origin, or on a host without CORS: with
+   * it set and no CORS headers the clips do not load at all.
+   */
+  audioCrossOrigin?: "anonymous" | "use-credentials";
   cookieName?: string;
   /** localStorage key prefix. Default "glotforge". */
   storagePrefix?: string;
@@ -97,6 +106,8 @@ export interface I18nContextValue {
   /** "unavailable" when no loadVoiceManifest was given. */
   voiceStatus: "ready" | "loading" | "unavailable";
   audioBaseUrl: string;
+  /** How clips from another origin are requested; null for the page's own origin. */
+  audioCrossOrigin: "anonymous" | "use-credentials" | null;
   /**
    * The user's preferred voice variant (e.g. "female"), or null for each
    * locale's default. Persisted locally; a locale that lacks the variant
@@ -135,6 +146,7 @@ export function I18nProvider(props: I18nProviderProps) {
     fontMap,
     loadVoiceManifest,
     audioBaseUrl = "/audio/i18n",
+    audioCrossOrigin,
     cookieName = DEFAULT_COOKIE_NAME,
     storagePrefix = "glotforge",
     devtoolsAllowed = false,
@@ -343,6 +355,7 @@ export function I18nProvider(props: I18nProviderProps) {
           ? "ready"
           : "loading",
       audioBaseUrl,
+      audioCrossOrigin: audioCrossOrigin ?? null,
       voiceVariant: voiceVariant || null,
       setVoiceVariant,
     }),
@@ -361,6 +374,7 @@ export function I18nProvider(props: I18nProviderProps) {
       activeVoiceManifest,
       loadVoiceManifest,
       audioBaseUrl,
+      audioCrossOrigin,
       voiceVariant,
       setVoiceVariant,
     ],

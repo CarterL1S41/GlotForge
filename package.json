@@ -1,6 +1,6 @@
 {
   "name": "glotforge",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Keyless i18n for TypeScript & React — write copy in your own language, ship every language. Content-hash catalogs, a build-time loader, AI translation with glossary and context steering, and spoken audio with word timing.",
   "license": "MIT",
   "author": "Carter Long",

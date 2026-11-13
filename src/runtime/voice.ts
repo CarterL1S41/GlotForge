@@ -162,7 +162,8 @@ export interface VoicePlayerOptions {
   /**
    * Loudness applied to every clip. Default 1, the clip as recorded; 0 is
    * silent. Above 1 amplifies through Web Audio, which needs clips served
-   * from the page's own origin: elsewhere the value is held at 1.
+   * from the page's own origin, or from another one with the provider's
+   * `audioCrossOrigin` set: elsewhere the value is held at 1.
    */
   volume?: number;
   /** Voice variant for this player; default is the provider's preferred one. */
@@ -198,7 +199,9 @@ export function useVoicePlayer(
   options: VoicePlayerOptions = {},
 ): VoicePlayer {
   const voice = useVoice(ref, options.variant);
-  const { locale } = useI18n();
+  const { locale, audioCrossOrigin } = useI18n();
+  const crossOriginRef = useRef(audioCrossOrigin);
+  crossOriginRef.current = audioCrossOrigin;
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const clipRef = useRef<number>(0);
   const frameRef = useRef<number | null>(null);
@@ -220,6 +223,8 @@ export function useVoicePlayer(
     if (!audioRef.current) {
       audioRef.current = new window.Audio();
       audioRef.current.preload = "auto";
+      // Must be set before the first clip is loaded to take effect.
+      if (crossOriginRef.current) audioRef.current.crossOrigin = crossOriginRef.current;
     }
     return audioRef.current;
   }, []);
@@ -241,7 +246,9 @@ export function useVoicePlayer(
       } catch {
         sameOrigin = false;
       }
-      if (sameOrigin) {
+      // Web Audio may only process media the page is allowed to read: its
+      // own, or another origin's when it was requested with CORS.
+      if (sameOrigin || el.crossOrigin) {
         try {
           const context = new window.AudioContext();
           const gain = context.createGain();

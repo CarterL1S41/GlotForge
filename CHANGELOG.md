@@ -4,6 +4,16 @@ All notable changes to GlotForge. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] — 2026-11-13
+
+### Added
+
+- **Clips from another origin.** The provider's `audioCrossOrigin`
+  (`"anonymous"` or `"use-credentials"`) has the player request clips as
+  CORS media, for clips served from a bucket, a CDN or an API on its own
+  host. With it set, a `volume` above 1 amplifies those clips too; without
+  it the value is still held at 1 for another origin.
+
 ## [1.4.0] — 2026-11-13
 
 ### Added
