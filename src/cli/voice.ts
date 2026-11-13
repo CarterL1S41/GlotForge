@@ -28,17 +28,27 @@ import {
 } from "./google";
 import { ProgressBar } from "./progress";
 import { languageLabel } from "./status";
+import { audioFingerprint, openClipStore, type ClipStore } from "./clip-store";
 import {
   audioDir,
   clipFile,
-  deleteClips,
+  manifestClipFiles,
   readVoiceManifest,
   voicedLocales,
-  writeClip,
   writeVoiceManifest,
 } from "./voice-catalog";
 
 export interface VoiceOptions {
+  /**
+   * Instead of generating: upload every clip the catalogs record that is
+   * in the local audio directory but not yet in the storage bucket.
+   */
+  sync?: boolean;
+  /**
+   * Instead of generating: delete the clip files in storage that no
+   * catalog records any more.
+   */
+  prune?: boolean;
   /** Restrict to these locales (default: every locale with a configured voice). */
   locales?: string[];
   /** Regenerate entries that are already current. */
@@ -155,6 +165,107 @@ function entryIsCurrent(
   return "timing-only";
 }
 
+/** Run a job over a list a few at a time. */
+async function inParallel<T>(items: T[], limit: number, job: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (next < items.length) await job(items[next++]);
+  });
+  await Promise.all(workers);
+}
+
+/**
+ * Upload the clips the catalogs record that sit in the local audio
+ * directory and are not in the bucket yet. Moving a library to a bucket
+ * is then a copy, with nothing generated again; the local files are left
+ * alone and can be deleted afterwards.
+ */
+async function syncClips(
+  config: ResolvedConfig,
+  cwd: string,
+  store: ClipStore,
+  locales: string[],
+  options: VoiceOptions,
+): Promise<void> {
+  if (store.kind === "local") {
+    console.log(
+      `Clips are kept in ${store.label}, so there is nothing to sync — set voice.storage to a bucket first.`,
+    );
+    return;
+  }
+  const root = audioDir(config, cwd);
+  let present = 0;
+  const toUpload: string[] = [];
+  const nowhere: string[] = [];
+  for (const locale of locales) {
+    const recorded = manifestClipFiles(readVoiceManifest(config, cwd, locale));
+    const stored = new Set(await store.list(locale));
+    for (const file of recorded) {
+      if (stored.has(file)) present++;
+      else if (fs.existsSync(path.join(root, file))) toUpload.push(file);
+      else nowhere.push(file);
+    }
+  }
+  console.log(
+    `${store.label}: ${present} clip(s) already there, ${toUpload.length} to upload from ${config.voice.audioDir}` +
+      (nowhere.length ? `, ${nowhere.length} recorded but found in neither place` : ""),
+  );
+  if (toUpload.length && !options.dryRun) {
+    const bar = new ProgressBar(toUpload.length);
+    let done = 0;
+    await inParallel(toUpload, config.voice.concurrency, async (file) => {
+      await store.write(file, fs.readFileSync(path.join(root, file)));
+      bar.update(++done, file);
+    });
+    bar.finish();
+    console.log(`Uploaded ${done} clip(s). The copies in ${config.voice.audioDir} are no longer needed.`);
+  }
+  if (nowhere.length) {
+    for (const file of nowhere.slice(0, 10)) console.log(`  missing: ${file}`);
+    if (nowhere.length > 10) console.log(`  ...and ${nowhere.length - 10} more`);
+    console.log('Run "glotforge voice --force" for those locales to generate the missing clips.');
+    process.exitCode = 1;
+  }
+}
+
+/** Delete the clip files in storage that no catalog records. */
+async function pruneClips(
+  config: ResolvedConfig,
+  cwd: string,
+  store: ClipStore,
+  locales: string[],
+  options: VoiceOptions,
+): Promise<void> {
+  const extra: string[] = [];
+  for (const locale of locales) {
+    const recorded = new Set(manifestClipFiles(readVoiceManifest(config, cwd, locale)));
+    for (const file of await store.list(locale)) {
+      if (/\.(mp3|wav)$/i.test(file) && !recorded.has(file)) extra.push(file);
+    }
+  }
+  if (!extra.length) {
+    console.log(`${store.label}: every clip file is recorded in a catalog — nothing to prune.`);
+    return;
+  }
+  console.log(`${store.label}: ${extra.length} clip file(s) are not recorded in any catalog.`);
+  for (const file of extra.slice(0, 10)) console.log(`  ${file}`);
+  if (extra.length > 10) console.log(`  ...and ${extra.length - 10} more`);
+  if (options.dryRun) return;
+  if (!options.yes) {
+    const ok = await confirm(
+      "\nDelete them? A build deployed before the last voice run may still play these. [y/N] ",
+    );
+    if (!ok) {
+      console.log("Aborted — nothing was deleted.");
+      return;
+    }
+  }
+  await inParallel(extra, config.voice.concurrency, async (file) => {
+    await store.remove([file]);
+  });
+  console.log(`Deleted ${extra.length} clip file(s).`);
+}
+
 export async function runVoice(
   config: ResolvedConfig,
   cwd: string,
@@ -173,6 +284,16 @@ export async function runVoice(
     }
   }
 
+  const store = openClipStore(config, cwd);
+  if (options.sync) {
+    await syncClips(config, cwd, store, targetLocales, options);
+    return;
+  }
+  if (options.prune) {
+    await pruneClips(config, cwd, store, targetLocales, options);
+    return;
+  }
+
   const manifest = readManifest(config, cwd);
   const voiced = Object.entries(manifest).filter(([, entry]) => entry.voice !== undefined);
   if (!voiced.length) {
@@ -187,6 +308,10 @@ export async function runVoice(
   const tasks: EntryTask[] = [];
   const skippedMissing: { locale: string; hash: string }[] = [];
   let alreadyCurrent = 0;
+  /** Files of variants no longer configured. */
+  const retired: string[] = [];
+  /** Files left in a bucket for `--prune`, because a deployed build may still play them. */
+  let leftInBucket = 0;
 
   for (const locale of targetLocales) {
     const variants = config.voice.voices[locale];
@@ -209,7 +334,7 @@ export async function runVoice(
       const kept: Record<string, VoiceEntry> = {};
       for (const [name, entry] of Object.entries(byVariant)) {
         if (variants[name]) kept[name] = entry;
-        else deleteClips(config, cwd, entry.clips.map((clip) => clip.file));
+        else retired.push(...entry.clips.map((clip) => clip.file));
       }
       if (Object.keys(kept).length) next.entries[hash] = kept;
     }
@@ -259,11 +384,16 @@ export async function runVoice(
         }
         // Existing audio can be kept when only the timing changed — except
         // for marks, which only come back from a fresh synthesis.
-        const filesOnDisk =
-          state === "timing-only" &&
-          timingMode !== "marks" &&
-          current !== undefined &&
-          current.clips.every((clip) => fs.existsSync(path.join(audioDir(config, cwd), clip.file)));
+        let filesOnDisk = false;
+        if (state === "timing-only" && timingMode !== "marks" && current !== undefined) {
+          filesOnDisk = true;
+          for (const clip of current.clips) {
+            if (!(await store.has(clip.file))) {
+              filesOnDisk = false;
+              break;
+            }
+          }
+        }
         tasks.push({
           ...base,
           reuse: filesOnDisk ? current : undefined,
@@ -272,6 +402,11 @@ export async function runVoice(
       }
     }
   }
+
+  // A local directory drops what is no longer used at once; a bucket keeps
+  // it until it is pruned.
+  if (store.kind === "local") await store.remove(retired);
+  else leftInBucket += retired.length;
 
   if (!tasks.length) {
     console.log(
@@ -389,14 +524,15 @@ export async function runVoice(
       for (let index = 0; index < task.sentences.length; index++) {
         const sentence = task.sentences[index];
         const words = splitWords(sentence, task.locale);
-        const file = clipFile(task.locale, task.hash, task.variant, index, config.voice.format);
-
+        let file: string;
         let audio: Buffer;
         let durationMs: number;
         let timepoints: Map<number, number> | null = null;
         const reused = task.reuse?.clips[index];
-        if (reused && reused.file === file) {
-          audio = fs.readFileSync(path.join(audioDir(config, cwd), file));
+        if (reused) {
+          // Same audio, new timing: the file keeps the name it has.
+          file = reused.file;
+          audio = await store.read(file);
           durationMs = reused.durationMs;
         } else {
           let tokens: { input: number; output: number } | undefined;
@@ -433,7 +569,15 @@ export async function runVoice(
           durationMs = audioDurationMs(audio, config.voice.format);
           totals.chars += sentence.length;
           totals.costUsd += synthesisCost(config, spec, sentence.length, durationMs / 1000, tokens);
-          writeClip(config, cwd, file, audio);
+          file = clipFile(
+            task.locale,
+            task.hash,
+            task.variant,
+            index,
+            config.voice.format,
+            config.voice.fileNames === "fingerprint" ? audioFingerprint(audio) : undefined,
+          );
+          await store.write(file, audio);
           newFiles.push(file);
         }
 
@@ -483,7 +627,8 @@ export async function runVoice(
         clips.push(clip);
       }
     } catch (err) {
-      deleteClips(config, cwd, newFiles);
+      // Nothing records these files yet, so they go whatever the storage.
+      await store.remove(newFiles).catch(() => undefined);
       totals.failed.push({
         locale: `${task.locale}/${task.variant}`,
         hash: task.hash,
@@ -496,11 +641,9 @@ export async function runVoice(
 
     // Replace the entry: drop files the new clip set no longer uses.
     const keep = new Set(clips.map((clip) => clip.file));
-    deleteClips(
-      config,
-      cwd,
-      task.previousFiles.filter((file) => !keep.has(file)),
-    );
+    const replaced = task.previousFiles.filter((file) => !keep.has(file));
+    if (store.kind === "local") await store.remove(replaced);
+    else leftInBucket += replaced.length;
     // Word timing counts only when every clip has it; the method recorded
     // is the weaker of the two when they were mixed.
     const timing: VoiceTiming = clips.every((clip) => clip.words)
@@ -551,6 +694,11 @@ export async function runVoice(
       ` · cost $${totals.costUsd.toFixed(4)}`,
   );
   for (const note of totals.downgraded.values()) console.log(`  note: ${note}`);
+  if (leftInBucket > 0) {
+    console.log(
+      `  note: ${leftInBucket} replaced clip file(s) stay in ${store.label} — "glotforge voice --prune" removes them once no deployed build plays them`,
+    );
+  }
   if (totals.failed.length) {
     console.log(`\n${totals.failed.length} message(s) failed:`);
     for (const failure of totals.failed.slice(0, 20)) {

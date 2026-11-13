@@ -21,7 +21,7 @@ interface ServiceAccount {
   token_uri?: string;
 }
 
-interface Credentials {
+export interface Credentials {
   kind: "service-account" | "api-key";
   project: string;
   /** Returns the value for the Authorization header, or null for API-key auth. */
@@ -190,6 +190,48 @@ export class GoogleApiError extends Error {
     super(`Google API ${status}: ${detail}`);
     this.name = "GoogleApiError";
   }
+}
+
+/**
+ * A request to a Google API with the caller's credentials, retried on
+ * quota and availability errors. The response is returned as it came, so
+ * the caller decides what a 404 means; other failures still need checking.
+ */
+export async function authorizedFetch(
+  creds: Credentials,
+  url: string,
+  init: { method?: string; headers?: Record<string, string>; body?: Buffer | string } = {},
+): Promise<Response> {
+  const headers: Record<string, string> = { ...(init.headers ?? {}), "x-goog-user-project": creds.project };
+  const bearer = await creds.bearer();
+  let target = url;
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  else if (creds.apiKey) {
+    target += (url.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(creds.apiKey);
+  }
+  // Bytes go out as a plain typed array, which is what fetch accepts.
+  const body = typeof init.body === "string" || init.body === undefined ? init.body : new Uint8Array(init.body);
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(target, { method: init.method ?? "GET", headers, body });
+    if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+      continue;
+    }
+    return res;
+  }
+}
+
+/** The error for a response that is not OK, with Google's message when it sent one. */
+export async function googleError(res: Response): Promise<GoogleApiError> {
+  const text = await res.text().catch(() => "");
+  let detail = text;
+  try {
+    const parsed = JSON.parse(text) as { error?: { message?: string } };
+    if (parsed.error?.message) detail = parsed.error.message;
+  } catch {
+    // Not JSON — raw body is the detail.
+  }
+  return new GoogleApiError(res.status, detail.slice(0, 400));
 }
 
 /* ------------------------------ synthesis -------------------------------- */

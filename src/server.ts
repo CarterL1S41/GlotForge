@@ -50,5 +50,6 @@ export type {
   VoiceTiming,
   VoiceApi,
   VoiceSpec,
+  VoiceStorage,
   VoiceTokenPrice,
 } from "./shared/types";

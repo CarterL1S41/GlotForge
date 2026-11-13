@@ -7,6 +7,7 @@ import {
   type ResolvedVoice,
   type VoiceApi,
   type VoiceSpec,
+  type VoiceStorage,
   type VoiceTokenPrice,
 } from "../shared/types";
 
@@ -124,6 +125,29 @@ function resolveVoice(
     tokenPricing[fragment] = { input: price.input, output: price.output };
   }
 
+  let storage: ResolvedConfig["voice"]["storage"] = { type: "local" };
+  if (raw.storage !== undefined) {
+    const type = (raw.storage as { type?: string }).type;
+    if (type === "gcs") {
+      const gcs = raw.storage as Extract<VoiceStorage, { type: "gcs" }>;
+      const bucket = typeof gcs.bucket === "string" ? gcs.bucket.trim().replace(/^gs:\/\//, "").replace(/\/+$/, "") : "";
+      if (!bucket || bucket.includes("/")) {
+        throw new Error(`${CONFIG_FILE}: voice.storage.bucket must be a bucket name, such as "my-audio".`);
+      }
+      storage = {
+        type: "gcs",
+        bucket,
+        prefix: (gcs.prefix ?? "").trim().replace(/^\/+|\/+$/g, ""),
+        cacheControl: (gcs.cacheControl ?? "").trim() || "private, max-age=31536000, immutable",
+      };
+    } else if (type !== "local") {
+      throw new Error(`${CONFIG_FILE}: voice.storage.type must be "local" or "gcs".`);
+    }
+  }
+  if (raw.fileNames !== undefined && raw.fileNames !== "stable" && raw.fileNames !== "fingerprint") {
+    throw new Error(`${CONFIG_FILE}: voice.fileNames must be "stable" or "fingerprint".`);
+  }
+
   // A variant is a voice name, or an object when it needs its own model,
   // style or API. Defaults flow: variant, then the locale's style, then the
   // voice-wide settings.
@@ -190,6 +214,8 @@ function resolveVoice(
     mp3Bitrate,
     tokenPricing,
     audioTokensPerSecond,
+    storage,
+    fileNames: raw.fileNames ?? (storage.type === "gcs" ? "fingerprint" : "stable"),
     project: raw.project ?? "",
     credentialsEnv: raw.credentialsEnv ?? "GOOGLE_APPLICATION_CREDENTIALS",
     apiKeyEnv: raw.apiKeyEnv ?? "GOOGLE_TTS_KEY",

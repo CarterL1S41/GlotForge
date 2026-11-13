@@ -4,6 +4,38 @@ All notable changes to GlotForge. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] — 2026-11-13
+
+### Added
+
+- **Clips in a storage bucket.** `voice.storage: { "type": "gcs", "bucket",
+  "prefix" }` keeps clip files in a Google Cloud Storage bucket instead of
+  the app's `audioDir`. The audio catalogs stay in the catalog directory
+  and are still committed, so they still record every clip and nothing is
+  generated twice. Uploading uses the service account the `voice` command
+  already authenticates with. The default, `{ "type": "local" }`, is
+  unchanged.
+- **Fingerprinted file names.** `voice.fileNames: "fingerprint"` adds a
+  short hash of the audio to each clip's name, so a file never changes
+  once written and can be cached for good. It is the default for a bucket;
+  local storage keeps `"stable"` names.
+- **`voice --sync`** uploads every clip the catalogs record that is in
+  `audioDir` and not yet in the bucket, so an existing library moves
+  without being generated again.
+- **`voice --prune`** deletes the clip files in storage that no catalog
+  records. With a bucket, the files of regenerated and dropped clips are
+  left in place during generation, since an earlier deployed build may
+  still play them, and are removed by this command.
+
+### Fixed
+
+- **Word timing past the end of a clip.** Speech-to-Text now and then
+  reports a word offset far beyond the clip's length. Alignment used it as
+  given, so the last words of a clip could be timed minutes after it
+  ended. A start beyond the clip is now treated as unheard and
+  interpolated, and an end beyond it is replaced with the next word's
+  start or the end of the clip; those words are flagged `estimated`.
+
 ## [1.3.0] — 2026-11-13
 
 ### Added

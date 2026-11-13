@@ -33,8 +33,10 @@ export function clipFile(
   variant: string,
   index: number,
   format: "MP3" | "LINEAR16",
+  /** A short hash of the audio, when file names carry one. */
+  fingerprint?: string,
 ): string {
-  return `${locale}/${hash}-${variant}-${index}.${format === "MP3" ? "mp3" : "wav"}`;
+  return `${locale}/${hash}-${variant}-${index}${fingerprint ? `.${fingerprint}` : ""}.${format === "MP3" ? "mp3" : "wav"}`;
 }
 
 export function readVoiceManifest(

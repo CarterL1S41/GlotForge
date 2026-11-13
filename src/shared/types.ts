@@ -106,6 +106,25 @@ export interface ResolvedVoice {
   api: VoiceApi;
 }
 
+/**
+ * Where clip files are kept. The audio catalogs stay in the catalog
+ * directory either way; only the audio moves.
+ *   local — the app's own `audioDir`, committed with the code.
+ *   gcs   — a Google Cloud Storage bucket. Nothing is written under
+ *           `audioDir`; the app serves the clips from the bucket.
+ */
+export type VoiceStorage =
+  | { type: "local" }
+  | {
+      type: "gcs";
+      /** Bucket name, without "gs://". */
+      bucket: string;
+      /** Folder inside the bucket the clips sit under. Default none. */
+      prefix?: string;
+      /** Cache-Control stored on each clip. Default "private, max-age=31536000, immutable". */
+      cacheControl?: string;
+    };
+
 /** Price of a speech model, USD per million tokens. */
 export interface VoiceTokenPrice {
   /** Text sent to the model. */
@@ -312,6 +331,22 @@ export interface I18nConfig {
      */
     audioDir?: string;
     /**
+     * Where clip files are kept. Default { "type": "local" }: under
+     * `audioDir`, committed with the code. A bucket keeps a large audio
+     * library out of the repository and the build:
+     *   "storage": { "type": "gcs", "bucket": "my-audio", "prefix": "i18n" }
+     * The catalogs still record every clip, so nothing is generated twice.
+     */
+    storage?: VoiceStorage;
+    /**
+     * How clip files are named. "stable" names a clip by its message,
+     * variant and position, so a regenerated clip replaces the old file.
+     * "fingerprint" adds a short hash of the audio, so a file never
+     * changes once written and can be cached for good. Default "stable"
+     * for local storage, "fingerprint" for a bucket.
+     */
+    fileNames?: "stable" | "fingerprint";
+    /**
      * How per-word offsets are obtained. Default "auto":
      *   auto   — SSML marks for families that honour them (Neural2, Wavenet,
      *            Standard, News, Polyglot), Speech-to-Text alignment for the
@@ -356,8 +391,12 @@ export interface I18nConfig {
 export interface ResolvedConfig
   extends Required<Omit<I18nConfig, "translation" | "voice">> {
   translation: Required<NonNullable<I18nConfig["translation"]>>;
-  voice: Omit<Required<NonNullable<I18nConfig["voice"]>>, "voices"> & {
+  voice: Omit<Required<NonNullable<I18nConfig["voice"]>>, "voices" | "storage"> & {
     /** Normalized: locale -> variant name -> voice with its model, style and API, config order kept. */
     voices: Record<string, Record<string, ResolvedVoice>>;
+    /** Normalized: a bucket carries its prefix (no leading or trailing slash) and Cache-Control. */
+    storage:
+      | { type: "local" }
+      | { type: "gcs"; bucket: string; prefix: string; cacheControl: string };
   };
 }

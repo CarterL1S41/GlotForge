@@ -9,6 +9,7 @@
  *                      [--effort low|medium|high|xhigh|max]
  *                      [--model id] [--batch-size n]
  *   glotforge voice [--locale a,b] [--force] [--yes] [--dry-run]
+ *   glotforge voice --sync | --prune [--locale a,b] [--yes] [--dry-run]
  *   glotforge status [--json]
  */
 
@@ -33,6 +34,8 @@ const BOOLEAN_FLAGS = new Set([
   "dry-run",
   "no-thinking",
   "thinking",
+  "sync",
+  "prune",
   "json",
   "help",
 ]);
@@ -95,12 +98,17 @@ Common flags:
 Per-locale defaults live in i18n.config.json under translation.overrides,
 e.g. "overrides": { "am-ET": { "thinking": true } } — CLI flags outrank them.
   --batch-size <n>          Messages per API request
+  voice only:
+  --sync                    Upload clips from the audio directory that the
+                            storage bucket does not have yet
+  --prune                   Delete clip files in storage that no catalog records
   status only:
   --json                    Machine-readable output
 
 Catalog files (messages.json, catalog/<locale>.json, voice/<locale>.json and
 the clip files) are committed to git — they ARE the cache; never gitignore
-them. voice needs Google credentials: GOOGLE_APPLICATION_CREDENTIALS (a
+them. With voice.storage set to a bucket the clip files live there and only
+the catalogs are committed. voice needs Google credentials: GOOGLE_APPLICATION_CREDENTIALS (a
 service-account key) or GOOGLE_TTS_KEY (an API key, plus voice.project).`;
 
 const CONFIG_TEMPLATE = {
@@ -210,6 +218,8 @@ async function main(): Promise<void> {
 
   if (command === "voice") {
     await runVoice(config, cwd, {
+      sync: booleans.has("sync"),
+      prune: booleans.has("prune"),
       locales: flags.get("locale"),
       force: booleans.has("force"),
       yes: booleans.has("yes"),

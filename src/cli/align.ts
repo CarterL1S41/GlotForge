@@ -73,6 +73,9 @@ function similar(a: string, b: string): boolean {
   return edits + (a.length - i) + (b.length - j) <= 1;
 }
 
+/** How far past the measured end of a clip a word may be reported and still be believed. */
+const END_TOLERANCE_MS = 250;
+
 /**
  * Timing for every target word. Returns null when too little was heard to
  * anchor anything (the clip then keeps sentence-level timing).
@@ -88,14 +91,22 @@ export function alignWords(
     words.map((w) => normalizeWord(w.text)),
     heard.map((h) => normalizeWord(h.text)),
   );
-  const placed = mapping.filter((m) => m !== null).length;
-  if (placed === 0) return null;
-
+  // The recogniser now and then reports an offset far past the end of the
+  // clip. A start out there places nothing; an end out there leaves the
+  // word's start standing and its end to be worked out below.
+  const openEnded = new Set<number>();
   const out: (VoiceWord | null)[] = words.map((word, index) => {
     const slot = mapping[index];
     if (slot === null) return null;
-    return { text: word.text, startMs: heard[slot].startMs, endMs: heard[slot].endMs };
+    const { startMs, endMs } = heard[slot];
+    if (startMs > durationMs) return null;
+    if (endMs > durationMs + END_TOLERANCE_MS || endMs < startMs) {
+      openEnded.add(index);
+      return { text: word.text, startMs, endMs: startMs, estimated: true };
+    }
+    return { text: word.text, startMs, endMs };
   });
+  if (!out.some((word) => word !== null)) return null;
 
   // Interpolate the unplaced words evenly across the gap between their
   // nearest placed neighbours (or the clip edges).
@@ -107,16 +118,32 @@ export function alignWords(
     }
     let end = index;
     while (end < out.length && !out[end]) end++;
-    const gapStart = index === 0 ? 0 : out[index - 1]!.endMs;
     const gapEnd = end === out.length ? durationMs : out[end]!.startMs;
     const count = end - index;
+    // A word before the gap whose end is unknown shares the gap with the
+    // unplaced words, starting from where it was heard to begin.
+    const sharing = index > 0 && openEnded.has(index - 1);
+    const gapStart = index === 0 ? 0 : sharing ? out[index - 1]!.startMs : out[index - 1]!.endMs;
+    const shares = count + (sharing ? 1 : 0);
     const span = Math.max(gapEnd - gapStart, 0);
+    if (sharing) {
+      out[index - 1]!.endMs = Math.round(gapStart + span / shares);
+      openEnded.delete(index - 1);
+    }
     for (let k = 0; k < count; k++) {
-      const startMs = Math.round(gapStart + (span * k) / count);
-      const endMs = Math.round(gapStart + (span * (k + 1)) / count);
+      const share = k + (sharing ? 1 : 0);
+      const startMs = Math.round(gapStart + (span * share) / shares);
+      const endMs = Math.round(gapStart + (span * (share + 1)) / shares);
       out[index + k] = { text: words[index + k].text, startMs, endMs, estimated: true };
     }
     index = end;
+  }
+
+  // A word with an unknown end that a placed word follows ends where that
+  // one starts; the last word of the clip ends with the clip.
+  for (const at of openEnded) {
+    const following = out[at + 1];
+    out[at]!.endMs = Math.max(out[at]!.startMs, following ? following.startMs : durationMs);
   }
 
   // Keep the sequence monotonic: a placed word can never start before the

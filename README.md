@@ -54,7 +54,9 @@ paid for or regenerated again. When source text changes, its hash changes —
 the old entry is pruned (git history keeps it) and only the new string is
 translated. There is no graveyard file: a git revert restores code and
 translations in the same commit. Audio catalogs and clip files follow the
-same rule: generated once, committed, pruned with their message.
+same rule: generated once, committed, pruned with their message. A large
+audio library can keep its clip files in a storage bucket instead, with
+only the catalogs committed (see "Keeping clips in a bucket").
 
 ## Setup in an app
 
@@ -550,6 +552,53 @@ milliseconds. An entry is regenerated when its voice, format, pace, clip
 setting or translated text changes; everything else is left alone. Translations must
 exist first — run `translate` before `voice`. `status` reports audio
 coverage per locale and how many entries are word-timed.
+
+### Keeping clips in a bucket
+
+A large audio library does not have to live in the repository. Set
+`voice.storage` and the clips go to a Google Cloud Storage bucket; the
+audio catalogs stay in `i18n/voice/` and are still committed, so they
+still say what exists and nothing is generated twice.
+
+```json
+"voice": {
+  "storage": { "type": "gcs", "bucket": "my-audio", "prefix": "i18n" }
+}
+```
+
+- `storage` — `{ "type": "local" }` (default) writes under `audioDir`.
+  `{ "type": "gcs", "bucket", "prefix", "cacheControl" }` uploads to
+  `gs://<bucket>/<prefix>/<locale>/` and writes nothing locally. It needs
+  a service account that can read and write objects in the bucket; an API
+  key cannot. `cacheControl` is stored on each clip and defaults to
+  `private, max-age=31536000, immutable`.
+- `fileNames` — `stable` names a clip `<hash>-<variant>-<n>.mp3`, so a
+  regenerated clip replaces the old file. `fingerprint` adds a short hash
+  of the audio (`<hash>-<variant>-<n>.<fingerprint>.mp3`), so a file never
+  changes once written and a browser can cache it for good. The default
+  is `stable` for local storage and `fingerprint` for a bucket.
+
+```
+npx glotforge voice --sync          # upload clips in audioDir that the bucket lacks
+npx glotforge voice --prune         # delete bucket files no catalog records
+```
+
+`--sync` moves an existing library: it uploads every clip the catalogs
+record that is in `audioDir` and not yet in the bucket, under the names
+it already has, and generates nothing. The local copies can be deleted
+afterwards. `--prune` is separate from generation on purpose: with a
+bucket, a regenerated or dropped clip's old file is left in place,
+because a build deployed earlier may still play it. Run `--prune` once
+nothing deployed refers to the old files. Both take `--locale` and
+`--dry-run`.
+
+The app decides how the clips reach the browser. The player asks for
+`<audioBaseUrl>/<file>`, where `<file>` is the path in the catalog
+(`es-ES/1abc-female-0.3f9a2c41de.mp3`), so point `audioBaseUrl` at
+whatever serves `<prefix>/<file>` from the bucket: a public bucket or a
+CDN in front of it, or a route in your own server that checks the
+request and streams the object, which keeps the bucket private. With
+fingerprinted names that route can answer with a long `Cache-Control`.
 
 ### Playing it
 
